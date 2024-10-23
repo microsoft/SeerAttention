@@ -1,4 +1,35 @@
-# Project
+# SeerAttention
+
+
+
+## Environment
+```
+    conda create -yn seer python=3.11
+    pip install torch==2.4.0
+    pip install -r requirements.txt
+```
+
+
+## Download models
+```
+    mkdir models
+    huggingface-cli download meta-llama/Llama-3.1-8B --local-dir  models/Llama-3.1-8B
+```
+
+
+## Post-training 
+```
+    bash scripts/run_post_training.sh
+```
+
+
+
+
+
+
+
+
+
 
 > This repo has been populated by an initial template to help get you started. Please
 > make sure to update the content to build a great experience for community-building.

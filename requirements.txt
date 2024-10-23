@@ -1,0 +1,12 @@
+torch
+transformers==4.44.2
+accelerate
+deepspeed
+datasets
+tqdm
+numpy
+matplotlib
+pytest
+huggingface_hub
+sentencepiece
+protobuf
