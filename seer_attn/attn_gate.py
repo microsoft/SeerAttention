@@ -50,6 +50,8 @@ class MultiHeadLinear(nn.Module):
         init.xavier_uniform_(self.weight)
 
     def forward(self, x): # x shape (batch_size, head, seq_length, channel_size)
+        if x.shape[1] < self.num_head:
+            x = repeat_kv(x, self.num_head // x.shape[1])
         return torch.matmul(x, self.weight) # torch.einsum('bhsi,hio->bhso', x, self.weight)
 
 
@@ -72,16 +74,15 @@ class AttnGate(nn.Module):
         q_in_channel_size = in_channel_size * self.q_dup_size
         k_in_channel_size = in_channel_size * self.k_dup_size
         
-        # Can use a single linear layer if q_dup_size = 1 and hidden_size = in_channel_size
-        # if self.q_dup_size > 1 or self.hidden_size != in_channel_size:
-        #     self.mask_linear_q = MultiHeadLinear(q_in_channel_size, self.hidden_size, self.num_q_head)
-        # else:
-        #     self.mask_linear_q = None
-        self.mask_linear_q = MultiHeadLinear(q_in_channel_size, self.hidden_size, self.num_q_head)
-        # self.mask_linear_k = MultiHeadLinear(k_in_channel_size, self.hidden_size, self.num_q_head)
-        self.mask_linear_k = MultiHeadLinear(k_in_channel_size, self.hidden_size, self.num_k_head)
-
-
+        # Can use a single linear layer if hidden_size = in_channel_size
+        
+        
+        if self.q_dup_size > 1 or self.hidden_size != in_channel_size:
+            self.mask_linear_q = MultiHeadLinear(q_in_channel_size, self.hidden_size, self.num_q_head)
+            self.mask_linear_k = MultiHeadLinear(k_in_channel_size, self.hidden_size, self.num_k_head)
+        else:
+            self.mask_linear_q = None
+            self.mask_linear_k = MultiHeadLinear(k_in_channel_size, self.hidden_size, self.num_q_head)
 
     # q shape (batch_size, num_q_head, seq_length, channel_size)
     # k shape (batch_size, num_k_head, seq_length, channel_size)
@@ -95,15 +96,15 @@ class AttnGate(nn.Module):
 
         k_pooled = [pool_func(k, kernel_size=[self.block_size, 1], stride=[self.block_size, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
         k = torch.cat(k_pooled, dim=-1)
-        
         k = self.mask_linear_k(k)
-        if self.num_k_head < self.num_q_head:
-            k = repeat_kv(k, self.num_q_head // self.num_k_head)
 
         if position_embeddings is not None:
             cos, sin = position_embeddings
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
 
+        if k.shape[1] < self.num_q_head:
+            k = repeat_kv(k, self.num_q_head // k.shape[1])
+            
         attn = torch.matmul(q, k.transpose(-1, -2)) / torch.sqrt(torch.tensor(self.hidden_size).float())
         attn = attn + attention_mask
         attn = F.softmax(attn, dim=-1)

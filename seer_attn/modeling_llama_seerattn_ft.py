@@ -1,4 +1,4 @@
-# Modified from huggingface llama implementation for post training 
+# Modified from huggingface llama implementation for fine-tuning
 
 import math
 from typing import List, Optional, Tuple, Union
@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
+
 from torch import nn
 
 from transformers.activations import ACT2FN
@@ -239,6 +240,12 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
+## use torch kernel for backward with pseudo mask for now
+def attention_forward(query, key, value, training_mask): 
+    return torch.nn.functional.scaled_dot_product_attention(
+        query, key, value, attn_mask=training_mask, is_causal=False
+    )
+
 
 class LlamaSeerAttention(nn.Module):
     """Attention module with seer attention post training setting"""
@@ -327,20 +334,46 @@ class LlamaSeerAttention(nn.Module):
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
+        with torch.no_grad():
+            _, pooling_gt = attn_with_pooling(
+                query_states,
+                key_states,
+                value_states,
+                True, 
+                1.0 / math.sqrt(self.head_dim)      
+            )        
+            downsampled_len = math.ceil(key_states.shape[-2] / self.config.gate_block_size)
+            topk_nz_ratio = 1 - math.sqrt(1 - self.config.nz_ratio)
+            topk = int(topk_nz_ratio * downsampled_len)
+            sparse_indices = torch.topk(predict_mask, topk, dim=-1).indices
+
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         query_states = query_states.contiguous()
         key_states = key_states.contiguous()
         value_states = value_states.contiguous()
 
-        
-        attn_output, pooling_gt = attn_with_pooling(
-            query_states,
-            key_states,
-            value_states,
-            True, ## This kernel currently only support causal masking. Attention mask is not supported yet.
-            1.0 / math.sqrt(self.head_dim)      
-        )        
+        attn_outout_list = []
+        for i in range(self.num_heads): ## split attention heads to save memory
+            indices_i = sparse_indices[:, i:i+1, :, :]
 
+            ## generate pseudo mask
+            training_mask = torch.full([bsz, 1, downsampled_len, downsampled_len], False, dtype = torch.bool, device = query_states.device)
+            training_mask.scatter_(-1, indices_i, True)
+            training_mask = training_mask.repeat_interleave(self.config.gate_block_size, dim=2).repeat_interleave(self.config.gate_block_size, dim=3)
+            training_mask = training_mask & attention_mask
+
+            attn_output_i = torch.utils.checkpoint.checkpoint(
+                attention_forward,
+                query_states[:, i:i+1, :, :],
+                key_states[:, i:i+1, :, :],
+                value_states[:, i:i+1, :, :],
+                training_mask
+            )
+            attn_outout_list.append(attn_output_i)
+
+        attn_output = torch.cat(attn_outout_list, dim=1)
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(bsz, q_len, -1)
 
@@ -482,10 +515,11 @@ class LlamaModel(LlamaPreTrainedModel):
         )
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
-        self.gradient_checkpointing = False
         config_ds = copy.deepcopy(config)
         config_ds.hidden_size = config.gate_hidden_size * config.num_attention_heads
         self.rotary_emb_ds = LlamaRotaryEmbedding(config=config_ds)
+        self.gradient_checkpointing = False
+
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -556,7 +590,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
-        position_ids_ds = position_ids[:, 0::self.config.gate_block_size] # downsampled position ids
+        position_ids_ds = position_ids[:, 0::self.config.gate_block_size] ## downsampled position ids
         position_embeddings_ds = self.rotary_emb_ds(hidden_states, position_ids_ds) # downsampled position embeddings
 
         # decoder layers
@@ -659,11 +693,18 @@ class LlamaModel(LlamaPreTrainedModel):
             attention_mask = torch.triu(attention_mask, diagonal=1)
             return attention_mask
 
+        def gen_attn_mask_bool(seq_len):
+            attention_mask = torch.full((seq_len, seq_len), True, dtype=torch.bool)
+            attention_mask.triu_(diagonal=1)
+            attention_mask.bitwise_not_()
+            return attention_mask
+
+        causal_mask = gen_attn_mask_bool(input_tensor.shape[1]).to(device=input_tensor.device)
         casual_mask_ds = gen_attn_mask(math.ceil(input_tensor.shape[1] / self.config.gate_block_size)).to(dtype=input_tensor.dtype).to(device=input_tensor.device)
-        return None, casual_mask_ds
+        return causal_mask, casual_mask_ds
 
 
-class LlamaForCausalLMSeerAttnPT(LlamaPreTrainedModel):  ## SeerAttention Post-Training Model
+class LlamaForCausalLMSeerAttnFT(LlamaPreTrainedModel):  ## SeerAttention Post-Training Model
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
@@ -727,8 +768,25 @@ class LlamaForCausalLMSeerAttnPT(LlamaPreTrainedModel):  ## SeerAttention Post-T
             cache_position=cache_position,
         )
 
+        hidden_states = outputs[0]
+        logits = self.lm_head(hidden_states[..., -1:, :]).float()
 
-        loss, logits = None, None
+        if labels is None:
+            loss = None
+        else:
+            loss_fct = torch.nn.CrossEntropyLoss(reduction='sum')
+            valid_seq_len = input_ids.shape[-1] - 1
+            valid_seq_len_slide_win = torch.sum(labels[:, 1:] >= 0).item()
+            loss = 0.0
+            for start_idx in range(0, valid_seq_len, 16384):
+                end_idx = min(start_idx + 16384, valid_seq_len)
+                shift_logits = self.lm_head(hidden_states[..., start_idx:end_idx, :]).float()
+                shift_labels = labels[..., start_idx + 1:end_idx + 1].contiguous()
+                shift_logits = shift_logits.view(-1, self.config.vocab_size)
+                shift_labels = shift_labels.view(-1)
+                shift_labels = shift_labels.to(shift_logits.device)
+                loss += loss_fct(shift_logits, shift_labels)
+            loss /= valid_seq_len_slide_win   
 
         if not return_dict:
             output = (logits,) + outputs[1:]

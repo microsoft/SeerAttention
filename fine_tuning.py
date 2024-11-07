@@ -9,13 +9,15 @@ import transformers
 from torch.utils.data import Dataset
 from transformers import Trainer, DataCollatorForLanguageModeling
 from torch.distributed import barrier
-from seer_attn import LlamaForCausalLMSeerAttnPT
+from seer_attn.modeling_llama_seerattn_ft import LlamaForCausalLMSeerAttnFT
 
+import importlib
 
 from mytrainer import AttnGateTrainer
 
-from datasets import load_dataset, load_from_disk
+from datasets import load_dataset
 import warnings
+from huggingface_hub import login
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -25,49 +27,42 @@ DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
-import random
-
 @dataclass
 class ModelArguments:
-    model_name_or_path: Optional[str] = field(default="meta-llama/Meta-Llama-3.1-8B")
-    attn_gate_type: Optional[str] = field(default="Qavg_Kmaxmin")
-    gate_block_size: Optional[int] = field(default=64)
+    model_name_or_path: Optional[str] = field(default="meta-llama/Meta-Llama-3-8B")
     
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
-    training_max_length: int = field(
-        default=65536,
-        metadata={"help": "Maximum sequence length in training."},
+    model_max_length: int = field(
+        default=8192,
+        metadata={"help": "Maximum sequence length."},
     )
-    trainable_params: str = field(
-        default="mask_linear",
-        metadata={"help": "AttnGate trainable parameters."},
+    train_dense_baseline: bool = field(
+        default=False,
+        metadata={"help": "Train dense baseline with yarn extension."},
     )
     resume_from_checkpoint: Optional[str] = field(
         default=None,
         metadata={"help": "Path to a checkpoint to resume training from."},
     )
     use_mse_loss: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Use MSE loss instead of SmoothL1 loss."},
     )
+    scaling_factor: float = field(
+        default=8.0,
+        metadata={"help": "Scaling_factor to scale up the rope."},
+    )
     gate_loss_scale: float = field(
-        default=10.0,
-        metadata={"help": "Gate loss scale."},
+        default=1.0,
+        metadata={"help": "Mask loss scale."},
     )
-    dataset_name: Optional[str] = field(
-        default="togethercomputer/RedPajama-Data-1T-Sample",
-        metadata={"help": "The name of the dataset to use."},
+    nz_ratio: float = field(
+        default=0.1053,
+        metadata={"help": "non-zero ratio in training."},
     )
-    toknized_dataset: bool = field(
-        default=False,
-        metadata={"help": "If the dataset is already toknized."},
-    )
-    
-    
-
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
@@ -91,19 +86,19 @@ def smart_tokenizer_and_embedding_resize(
         input_embeddings[-num_new_tokens:] = input_embeddings_avg
         output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
-def tokenize_fn(tokenizer, tranining_max_length, example):
+def tokenize_fn(tokenizer, example):
+    context_length = tokenizer.model_max_length
     outputs = tokenizer(
         tokenizer.eos_token.join(example["text"]),
         truncation=False,
         return_tensors="pt",
-        pad_to_multiple_of=tranining_max_length,
+        pad_to_multiple_of=context_length,
+        # pad_to_multiple_of=64,
         padding=True,
     )
-    return {"input_ids": outputs["input_ids"].view(-1, tranining_max_length)}
-
+    return {"input_ids": outputs["input_ids"].view(-1, context_length)}
 
 def train():
-
     parser = transformers.HfArgumentParser((ModelArguments, TrainingArguments))
     model_args, training_args = parser.parse_args_into_dataclasses()
 
@@ -113,22 +108,36 @@ def train():
         cache_dir=training_args.cache_dir,
     )
 
+    config.rope_scaling = {
+        "type": "yarn",
+        "factor": training_args.scaling_factor,
+    }
 
-    config.attn_gate_type = model_args.attn_gate_type
-    config.gate_block_size = model_args.gate_block_size
+    config.max_position_embeddings = int(training_args.scaling_factor * config.max_position_embeddings)
+    config.nz_ratio = training_args.nz_ratio
 
-    model = LlamaForCausalLMSeerAttnPT.from_pretrained(
-        model_args.model_name_or_path,
-        config=config,
-        cache_dir=training_args.cache_dir,
-        torch_dtype=torch.bfloat16,
-    )
-    
-    print("Using AttnGate type:", model_args.attn_gate_type)
+    if training_args.train_dense_baseline:
+        model = transformers.LlamaForCausalLM.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            torch_dtype=torch.bfloat16,
+            config=config,
+            attn_implementation="flash_attention_2",
+        )
+    else:
+        model = LlamaForCausalLMSeerAttnFT.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            torch_dtype=torch.bfloat16,
+            config=config,
+        )
+        
+
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
+        model_max_length=training_args.model_max_length,
         padding_side="right",
         use_fast=True,
     )
@@ -150,49 +159,61 @@ def train():
     )
 
     for n, p in model.named_parameters():
-        if training_args.trainable_params in n:
-            p.requires_grad = True
-            torch.nn.init.xavier_uniform_(p)
-        else:
-            p.requires_grad = False
+        p.requires_grad = True
 
     rank = int(os.environ.get('RANK', -1))
     if rank > 0:
         barrier()
 
-    if training_args.toknized_dataset:
-        dataset = load_from_disk(training_args.dataset_name)
-        dataset = dataset['input_ids']
-    else:
-        dataset = load_dataset(training_args.dataset_name, cache_dir=training_args.cache_dir, trust_remote_code=True)
-        dataset = dataset.map(partial(tokenize_fn,tokenizer, training_args.training_max_length),batched=True, num_proc=128, remove_columns=["text", "meta", ])
-        dataset = dataset['train']
+    dataset = load_dataset("togethercomputer/RedPajama-Data-1T-Sample", cache_dir=training_args.cache_dir, trust_remote_code=True)
+    dataset = dataset.map(partial(tokenize_fn,tokenizer),batched=True, num_proc=128, remove_columns=["text", "meta"])
 
     if rank == 0:
         barrier()
 
+    print(dataset)
+
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    model.config.use_cache = False 
-
-    trainer = AttnGateTrainer(
-        model=model, 
-        tokenizer=tokenizer, 
-        args=training_args,
-        train_dataset=dataset,
-        eval_dataset=None,
-        gate_loss_scale=training_args.gate_loss_scale,
-        use_mse_loss=training_args.use_mse_loss,
-        data_collator=data_collator)
+    model.config.use_cache = False        
+    model.enable_input_require_grads()    
+    model.gradient_checkpointing_enable()  
+    
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    
+    if training_args.train_dense_baseline:
+        trainer = Trainer(
+            model=model, 
+            tokenizer=tokenizer, 
+            args=training_args,
+            train_dataset=dataset["train"],
+            eval_dataset=None,
+            data_collator=data_collator
+        )
+    else:
+        trainer = AttnGateTrainer(
+            model=model, 
+            orig_weight_training=True,
+            tokenizer=tokenizer, 
+            args=training_args,
+            train_dataset=dataset["train"],
+            eval_dataset=None,
+            gate_loss_scale=training_args.gate_loss_scale,
+            use_mse_loss=training_args.use_mse_loss,
+            data_collator=data_collator
+        )
 
     if training_args.resume_from_checkpoint is not None:
         trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     else:
         trainer.train()
+
     trainer.save_state()
     trainer.save_model(output_dir=training_args.output_dir)
 
+
 if __name__ == "__main__":
+
     train()
 
 
