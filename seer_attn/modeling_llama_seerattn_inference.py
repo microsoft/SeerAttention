@@ -350,7 +350,7 @@ class LlamaSeerAttention(nn.Module):
         if self.config.nz_ratio < 1 and q_len > 1:
             topk_nz_ratio = 1 - math.sqrt(1 - self.config.nz_ratio)
             downsampled_len = math.ceil(key_states.shape[-2] / self.config.gate_block_size)
-            predict_mask = self.attn_gate(q_, k_, attention_mask_ds, position_embeddings_ds)
+            predict_mask = self.attn_gate(q_, k_, attention_mask_ds, position_embeddings_ds, is_training=False)
 
             topk = int(topk_nz_ratio * downsampled_len)
             if topk == 0:

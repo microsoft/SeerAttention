@@ -86,7 +86,7 @@ class AttnGate(nn.Module):
 
     # q shape (batch_size, num_q_head, seq_length, channel_size)
     # k shape (batch_size, num_k_head, seq_length, channel_size)
-    def forward(self, q, k, attention_mask, position_embeddings=None): 
+    def forward(self, q, k, attention_mask, position_embeddings=None, is_training=True):  
         q, k, attention_mask = q.contiguous(), k.contiguous(), attention_mask.contiguous()
 
         q_pooled = [pool_func(q, kernel_size=[self.block_size, 1], stride=[self.block_size, 1], ceil_mode=True) for pool_func in self.q_pooling_funcs]
@@ -104,10 +104,14 @@ class AttnGate(nn.Module):
 
         if k.shape[1] < self.num_q_head:
             k = repeat_kv(k, self.num_q_head // k.shape[1])
-            
-        attn = torch.matmul(q, k.transpose(-1, -2)) / torch.sqrt(torch.tensor(self.hidden_size).float())
-        attn = attn + attention_mask
-        attn = F.softmax(attn, dim=-1)
+        
+        if is_training:
+            attn = torch.matmul(q, k.transpose(-1, -2)) / torch.sqrt(torch.tensor(self.hidden_size).float())
+            attn = attn + attention_mask
+            attn = F.softmax(attn, dim=-1)
+        else:
+            attn = torch.matmul(q, k.transpose(-1, -2))
+            attn = attn + attention_mask
         return attn
 
 
