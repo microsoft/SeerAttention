@@ -8,19 +8,19 @@ SeerAttention is a learning-based method to enable block-level sparse attention 
 
 ## Environment
 ```bash
-    conda create -yn seer python=3.11
-    conda activate seer
-    pip install torch==2.4.0
-    pip install -r requirements.txt
+conda create -yn seer python=3.11
+conda activate seer
+pip install torch==2.4.0
+pip install -r requirements.txt
 ```
 
 
 ## Download the pretrained models for experiments
 ```bash
-    mkdir models
-    huggingface-cli download meta-llama/Llama-3.1-8B --local-dir  models/meta-llama/Llama-3.1-8B
-    huggingface-cli download meta-llama/Meta-Llama-3-8B --local-dir  models/meta-llama/Meta-Llama-3-8B
-    huggingface-cli download meta-llama/Llama-3.1-8B-Instruct --local-dir  models/meta-llama/Llama-3.1-8B-Instruct
+mkdir models
+huggingface-cli download meta-llama/Llama-3.1-8B --local-dir  models/meta-llama/Llama-3.1-8B
+huggingface-cli download meta-llama/Meta-Llama-3-8B --local-dir  models/meta-llama/Meta-Llama-3-8B
+huggingface-cli download meta-llama/Llama-3.1-8B-Instruct --local-dir  models/meta-llama/Llama-3.1-8B-Instruct
 ```
 
 
@@ -29,7 +29,7 @@ Only AttnGates are trained in Post-training case. In other words, the original m
 
 Run the below script to reproduce the results on llama-3.1-8B. Once you obtain the model with AttnGates, different sparsity ratios can be applied. PPL results will be evaluated on pg19 and proof-pile datasets.
 ```bash
-    bash scripts/run_post_training.sh
+bash scripts/run_post_training.sh
 ```
 
 
@@ -38,28 +38,28 @@ You can fine-tuning a model during long-context extension with SeerAttention. Bo
 
 Run the below scripts to reproduce the dense baseline and Seerattention (50% sparsity) results of extending llama-3-8B from 8k to 32k. 
 ```bash
-    bash scripts/run_dense_yarn_finetuning.sh
-    bash scripts/run_seerattn_yarn_finetuning.sh
+bash scripts/run_dense_yarn_finetuning.sh
+bash scripts/run_seerattn_yarn_finetuning.sh
 ```
 
 ## Experiment with other AttnGate designs
 The current AttnGate design is simple, only pooling + linear layers. You are encouraged to contribute your own design and train with our customized attention pooling kernel that generates ground truth. It is a functional self-attention kernel but also outputs the 2D maxpooled (block-size 64) attention map.
 ```python
-    from seer_attn.kernels.attn_pooling_kernel import attn_with_pooling
-    ###...
+from seer_attn.kernels.attn_pooling_kernel import attn_with_pooling
+###...
 
-    predict_mask = your_gate_design(...)
+predict_mask = your_gate_design(...)
 
-    attn_output, pooling_gt = attn_with_pooling(
-        query_states,
-        key_states,
-        value_states,
-        True, 
-        1.0 / math.sqrt(self.head_dim)      
-    )
+attn_output, pooling_gt = attn_with_pooling(
+    query_states,
+    key_states,
+    value_states,
+    True, 
+    1.0 / math.sqrt(self.head_dim)      
+)
 
-    ###...
-    loss = mse(predict_mask, pooling_gt)   
+###...
+loss = mse(predict_mask, pooling_gt)   
 ```
 ## Inference Kerenel Development
 Our current block sparse attention triton kernel is experimental with limited use cases. Currently it does not support external attention masks.

@@ -74,13 +74,11 @@ class AttnGate(nn.Module):
         q_in_channel_size = in_channel_size * self.q_dup_size
         k_in_channel_size = in_channel_size * self.k_dup_size
         
-        # Can use a single linear layer if hidden_size = in_channel_size
-        
         
         if self.q_dup_size > 1 or self.hidden_size != in_channel_size:
             self.mask_linear_q = MultiHeadLinear(q_in_channel_size, self.hidden_size, self.num_q_head)
             self.mask_linear_k = MultiHeadLinear(k_in_channel_size, self.hidden_size, self.num_k_head)
-        else:
+        else: # Can use a single linear layer if hidden_size = in_channel_size
             self.mask_linear_q = None
             self.mask_linear_k = MultiHeadLinear(k_in_channel_size, self.hidden_size, self.num_q_head)
 
