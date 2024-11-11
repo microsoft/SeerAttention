@@ -7,10 +7,10 @@ SeerAttention is a learning-based method to enable block-level sparse attention 
 
 
 The AttnGate units perform pooling in sequence dimension and predict the estimated max attention score of a block. By applying row-wise TopK on top the results, sparse block indices can be generated. 
-<div style="text-align: center;">
-    <img src="figures/illustration.png" alt="drawing" width="500"/>
-</div>
 
+<div style="text-align: center;">
+    <img src="figures/illustration.png" alt="drawing" width="550"/>
+</div>
 
 
 ## Environment
