@@ -338,28 +338,48 @@ class LlamaSeerAttention(nn.Module):
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
+
+        causal_mask = attention_mask
+        if attention_mask is not None:
+            causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
+
+        is_causal = True if causal_mask is None and q_len > 1 else False
+
         assert self.config.nz_ratio <= 1 and self.config.nz_ratio > 0
-        topk_nz_ratio = 1 - math.sqrt(1 - self.config.nz_ratio)
-        # print("topk_nz_ratio", topk_nz_ratio)
-        downsampled_len = math.ceil(key_states.shape[-2] / 64)
 
-        predict_mask = self.attn_gate(q_, k_, attention_mask_ds, position_embeddings_ds)
+        if self.config.nz_ratio < 1 and q_len > 1:
+            topk_nz_ratio = 1 - math.sqrt(1 - self.config.nz_ratio)
+            downsampled_len = math.ceil(key_states.shape[-2] / self.config.gate_block_size)
+            predict_mask = self.attn_gate(q_, k_, attention_mask_ds, position_embeddings_ds)
 
-        topk = int(topk_nz_ratio * downsampled_len)
-        if topk == 0:
-            topk = 1
-            print("warning: sparsity ratio too high. topk modify from 0 to 1")
-        block_indices = torch.topk(predict_mask, topk, dim=-1).indices
+            topk = int(topk_nz_ratio * downsampled_len)
+            if topk == 0:
+                topk = 1
+                print("warning: sparsity ratio too high. topk modify from 0 to 1")
+            block_indices = torch.topk(predict_mask, topk, dim=-1).indices
 
-        attn_output = block_sparse_attn(
-            query_states,
-            key_states,
-            value_states,
-            block_indices,
-            True,
-            1.0 / math.sqrt(self.head_dim)      
-        )          
-        pooling_gt = None
+            attn_output = block_sparse_attn(
+                query_states,
+                key_states,
+                value_states,
+                block_indices,
+                True,
+                1.0 / math.sqrt(self.head_dim)      
+            )          
+            pooling_gt = None
+        else:
+            key_states = repeat_kv(key_states, self.num_key_value_groups)
+            value_states = repeat_kv(value_states, self.num_key_value_groups)
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                query_states,
+                key_states,
+                value_states,
+                attn_mask=causal_mask,
+                dropout_p=self.attention_dropout if self.training else 0.0,
+                is_causal=is_causal,
+            ) 
+            pooling_gt = None
+            predict_mask = None
             
 
 

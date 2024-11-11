@@ -193,8 +193,8 @@ def main(args):
                     sliding_window=args.sliding_window, 
                     truncate=args.truncate,
                 )['mean_perplexity']
-                print(f"{model}: {max_length}_{nz_ratio}={ppl}")
-                result.append(f"{model}: {max_length}_{nz_ratio}={ppl}")      
+                print(f"{model}: {max_length}={ppl}")
+                result.append(f"{model}: {max_length}={ppl}")      
 
         results.append(result)
 

@@ -404,3 +404,7 @@ blob*
 amlt*
 .amlt*
 models*
+amlt*
+sing*
+.amltignore
+test_script.sh

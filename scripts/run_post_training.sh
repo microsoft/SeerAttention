@@ -17,7 +17,7 @@ torchrun --nproc_per_node=4 --master_port=10002 post_training.py  \
         --evaluation_strategy "no"     \
         --save_strategy "no"     \
         --learning_rate 1e-3     \
-        --weight_decay 1e-1     \
+        --weight_decay 1e-2     \
         --warmup_steps 20     \
         --lr_scheduler_type "cosine"     \
         --logging_steps 1     \
@@ -31,12 +31,26 @@ CUDA_VISIBLE_DEVICES=0 python eval_ppl.py \
     --feature text \
     --dataset-min-tokens 131072 \
     --dataset emozilla/pg19-test \
-    --nz_ratios 0.5\
+    --nz_ratios 1.0,0.5,0.4,0.3,0.2,0.1\
     --use_seer_attn \
     --max-tokens 131072 \
-    --min-tokens 131072 \
+    --min-tokens 8192 \
     --cache_dir $CACHE_DIR \
     --truncate \
-    --output-file ./results/ppl.txt
+    --output-file ./results/pg_ppl.txt
 
+CUDA_VISIBLE_DEVICES=0 python eval_ppl.py \
+    -m $OUTPUT_MODEL_DIR \
+    --split test \
+    --feature text \
+    --dataset-min-tokens 131072 \
+    --dataset hoskinson-center/proof-pile \
+    --nz_ratios 1.0,0.5,0.4,0.3,0.2,0.1\
+    --use_seer_attn \
+    --max-tokens 131072 \
+    --min-tokens 8192 \
+    --sample 10 \
+    --cache_dir $CACHE_DIR \
+    --truncate \
+    --output-file ./results/proofpile_ppl.txt
 

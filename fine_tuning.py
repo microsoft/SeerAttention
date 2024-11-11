@@ -111,6 +111,7 @@ def train():
     config.rope_scaling = {
         "type": "yarn",
         "factor": training_args.scaling_factor,
+        "original_max_position_embeddings": config.max_position_embeddings,
     }
 
     config.max_position_embeddings = int(training_args.scaling_factor * config.max_position_embeddings)

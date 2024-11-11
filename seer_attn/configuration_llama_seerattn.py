@@ -35,8 +35,9 @@ class LlamaConfig(PretrainedConfig):
         mlp_bias=False,
         nz_ratio = 1.0,
         save_memory=True,
-        attn_gate_type=None,
+        attn_gate_type='Qavg_Kmaxmin',
         gate_block_size=64, ## currently only support 64
+        gate_hidden_size=128,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -65,6 +66,7 @@ class LlamaConfig(PretrainedConfig):
         self.save_memory = save_memory
         self.attn_gate_type = attn_gate_type
         self.gate_block_size = gate_block_size
+        self.gate_hidden_size = gate_hidden_size
 
         if self.rope_scaling is not None and "type" in self.rope_scaling:
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
