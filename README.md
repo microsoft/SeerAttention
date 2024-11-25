@@ -61,8 +61,8 @@ attn_output, pooling_gt = attn_with_pooling(
     query_states,
     key_states,
     value_states,
-    True, 
-    1.0 / math.sqrt(self.head_dim)
+    is_causal, 
+    sm_scale,
     block_size      
 )
 
