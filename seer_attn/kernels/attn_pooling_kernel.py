@@ -101,25 +101,6 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
     return acc, l_i, m_i
 
 
-
-configs = [
-    triton.Config({'BLOCK_M': BM, 'BLOCK_N': BN}, num_stages=s, num_warps=w) \
-    for BM in [64]\
-    for BN in [64]\
-    for s in ([1] if is_hip() else [3, 4, 7])\
-    for w in [4, 8]\
-]
-
-
-def keep(conf):
-    BLOCK_M = conf.kwargs["BLOCK_M"]
-    BLOCK_N = conf.kwargs["BLOCK_N"]
-    if BLOCK_M * BLOCK_N < 128 * 128 and conf.num_warps == 8:
-        return False
-    return True
-
-
-@triton.autotune(list(filter(keep, configs)), key=["N_CTX", "HEAD_DIM"])
 @triton.jit
 def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
               R, Po,
@@ -254,7 +235,8 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
 class _attention_pooling(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, k, v, causal, sm_scale):
+    def forward(ctx, q, k, v, causal, sm_scale, block_size):
+        assert block_size in {32, 64, 128}
         # shape constraints
         q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
         HEAD_DIM_Q, HEAD_DIM_K = q.shape[-1], k.shape[-1]
@@ -266,8 +248,7 @@ class _attention_pooling(torch.autograd.Function):
         assert NUM_HEADS_K == NUM_HEADS_V
         n_rep = NUM_HEADS_Q // NUM_HEADS_K
         o = torch.empty_like(q)
-        autotuned_config = _attn_fwd.configs[0]
-        BLOCK_N = autotuned_config.kwargs["BLOCK_N"]
+        BLOCK_N = block_size
         n_d = triton.cdiv(q.shape[2], BLOCK_N)
         R = torch.full((q.shape[0], q.shape[1], q.shape[2], n_d), -65504.0, device=q.device, dtype=torch.bfloat16)
         Po = torch.zeros((q.shape[0], q.shape[1], n_d, n_d), device=q.device, dtype=torch.bfloat16)
@@ -294,16 +275,20 @@ class _attention_pooling(torch.autograd.Function):
             n_rep=n_rep,  #
             HEAD_DIM=HEAD_DIM_K,  #
             STAGE=stage,  #
+            BLOCK_M=block_size,
+            BLOCK_N=block_size,
             N_DOWNSAMPLE=n_d,
+            num_stages=3,
+            num_warps=4,
             **extra_kern_args)
         Sum = torch.sum(Po, dim=-1, keepdim=True)
         Po.div_(Sum)
         
-        ctx.save_for_backward(q, k, v, o, M)
-        ctx.grid = grid
-        ctx.sm_scale = sm_scale
-        ctx.HEAD_DIM = HEAD_DIM_K
-        ctx.causal = causal
+        # ctx.save_for_backward(q, k, v, o, M)
+        # ctx.grid = grid
+        # ctx.sm_scale = sm_scale
+        # ctx.HEAD_DIM = HEAD_DIM_K
+        # ctx.causal = causal
         return o, Po
 
 attn_with_pooling = _attention_pooling.apply

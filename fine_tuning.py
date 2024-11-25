@@ -9,7 +9,7 @@ import transformers
 from torch.utils.data import Dataset
 from transformers import Trainer, DataCollatorForLanguageModeling
 from torch.distributed import barrier
-from seer_attn.modeling_llama_seerattn_ft import LlamaForCausalLMSeerAttnFT
+from seer_attn import LlamaForCausalLMSeerAttnFT
 
 import importlib
 
@@ -176,12 +176,9 @@ def train():
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    model.config.use_cache = False        
     model.enable_input_require_grads()    
     model.gradient_checkpointing_enable()  
-    
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    
+        
     if training_args.train_dense_baseline:
         trainer = Trainer(
             model=model, 

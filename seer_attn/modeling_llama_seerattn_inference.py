@@ -30,8 +30,10 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from seer_attn.configuration_llama_seerattn import LlamaConfig
+from seer_attn.kernels.block_sparse_attn_csr import  get_sparse_attn_mask_from_topk, sparse_attention_factory
+from seer_attn.kernels.block_sparse_attn_topk import block_sparse_attn
 
-from seer_attn.kernels.block_sparse_attn import block_sparse_attn
+# from seer_attn.kernels.block_sparse_attn import block_sparse_attn
 from seer_attn.attn_gate import ATTNGATE_CLASSES
 
 logger = logging.get_logger(__name__)
@@ -88,6 +90,10 @@ class LlamaSeerAttention(nn.Module):
 
         # TODO (joao): remove in v4.45 (RoPE is computed in the model, not in the decoder layers)
         self.rotary_emb = LlamaRotaryEmbedding(config=self.config)
+        if self.config.kernel_implementation == 'CSR' or self.config.gate_block_size != 64:
+            self.fwd_func = sparse_attention_factory(config.gate_block_size, config.gate_block_size)
+        else:
+            self.fwd_func = block_sparse_attn
 
 
     # Adapted from LlamaAttention.forward
@@ -140,24 +146,48 @@ class LlamaSeerAttention(nn.Module):
         assert self.config.nz_ratio <= 1 and self.config.nz_ratio > 0
 
         if self.config.nz_ratio < 1 and q_len > 1:
+            
             topk_nz_ratio = 1 - math.sqrt(1 - self.config.nz_ratio)
             downsampled_len = math.ceil(key_states.shape[-2] / self.config.gate_block_size)
-            predict_mask = self.attn_gate(q_, k_, block_attention_mask, block_position_embeddings, is_training=False)
-
             topk = int(topk_nz_ratio * downsampled_len)
             if topk == 0:
                 topk = 1
                 print("warning: sparsity ratio too high. topk modify from 0 to 1")
-            block_indices = torch.topk(predict_mask, topk, dim=-1).indices
 
-            attn_output = block_sparse_attn(
-                query_states,
-                key_states,
-                value_states,
-                block_indices,
-                True,
-                1.0 / math.sqrt(self.head_dim)      
-            )          
+            predict_mask = self.attn_gate(q_, k_, block_attention_mask, block_position_embeddings, is_training=False)
+
+            if self.config.kernel_implementation == 'TopK':
+                block_indices = torch.topk(predict_mask, topk, dim=-1).indices
+                attn_output = self.fwd_func(
+                    query_states,
+                    key_states,
+                    value_states,
+                    block_indices,
+                    True,
+                    1.0 / math.sqrt(self.head_dim)      
+                ) 
+
+            elif self.config.kernel_implementation == 'CSR':
+                key_states = repeat_kv(key_states, self.num_key_value_groups)
+                value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+                
+                bool_sparse_patten = get_sparse_attn_mask_from_topk(
+                    predict_mask, 
+                    topk, 
+                    query_states.device, 
+                    self.config.use_dense_for_last_block
+                )
+                attn_output = self.fwd_func(
+                    query_states,
+                    key_states,
+                    value_states,
+                    bool_sparse_patten,
+                    1.0 / math.sqrt(self.head_dim)      
+                )
+            else:
+                raise ValueError("kernel_implementation must be either 'TopK' or 'CSR'")
+         
             pooling_gt = None
         else:
             key_states = repeat_kv(key_states, self.num_key_value_groups)

@@ -185,7 +185,6 @@ def train():
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    model.config.use_cache = False 
 
     trainer = AttnGateTrainer(
         model=model, 

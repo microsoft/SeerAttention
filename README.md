@@ -62,14 +62,22 @@ attn_output, pooling_gt = attn_with_pooling(
     key_states,
     value_states,
     True, 
-    1.0 / math.sqrt(self.head_dim)      
+    1.0 / math.sqrt(self.head_dim)
+    block_size      
 )
 
 ###...
 loss = mse(predict_mask, pooling_gt)   
 ```
 ## Inference Kerenel Development
-Our current block sparse attention triton kernel is experimental with limited use cases. Currently it does not support external attention masks.
+Our current block sparse attention inference kernel is experimental.
+We have two different implementations under `seer_atten/kernels`:
+
+- block_sparse_attn_topk: directly takes torch.topk.indices as input. No backward support yet.
+- block_sparse_attn_csr: modified from phi-3-small kernel. Use CSR to encode sparse blocks. It has backward that can be used in fine-tuning. Currently only support batch-size = 1. 
+
+You can choose the inference kernel by setting `kernel_implementation="TopK" or 
+"CSR"` in model config. 
 
 
 ## Citation
