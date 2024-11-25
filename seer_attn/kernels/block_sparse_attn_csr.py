@@ -1,3 +1,13 @@
+"""
+    Original Author: Eric Lin (xihlin) (https://huggingface.co/microsoft/Phi-3-small-8k-instruct/blob/main/triton_flash_blocksparse_attn.py)
+"""
+"""
+    Modified by Yizhao Gao
+    Support TopK sparse attention
+    Modify backward to avoid atomic_add by seperating dq, dkdv
+"""
+
+
 from typing import TypeVar
 from functools import lru_cache
 import math
