@@ -1,7 +1,8 @@
-# SeerAttention
+# SeerAttention: Learning Intrinsic Sparse Attention in Your LLMs
+
+[[arxiv paper](https://arxiv.org/abs/2410.13276)] 
 
 SeerAttention is a learning-based method to enable block-level sparse attention for long-context LLM without using prefined static pattern or heuristic methods. It can be applied in Post-training or Fine-tuning stages. The Attention Gate units learn from the intrinsic sparsity in the pre-trained models.  
-[[arxiv paper](https://arxiv.org/abs/2410.13276)] 
 
 ![SeerAttn](figures/SeerAttn.png)
 
@@ -71,13 +72,12 @@ loss = mse(predict_mask, pooling_gt)
 ```
 ## Inference Kerenel Development
 Our current block sparse attention inference kernel is experimental.
-We have two different implementations under `seer_atten/kernels`:
+We have two different implementations under `seer_attn/kernels`:
 
 - block_sparse_attn_topk: directly takes torch.topk.indices as input. No backward support yet.
 - block_sparse_attn_csr: modified from phi-3-small kernel. Use CSR to encode sparse blocks. It has backward that can be used in fine-tuning. Currently only support batch-size = 1. 
 
-You can choose the inference kernel by setting `kernel_implementation="TopK" or 
-"CSR"` in model config. 
+You can choose the inference kernel by setting `kernel_implementation="TopK" or "CSR"` in model config. 
 
 
 ## Citation
