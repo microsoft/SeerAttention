@@ -1,5 +1,9 @@
 """
-Modified from Triton's official fused attetnion example (https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html)
+    Original code from Triton's official fused attention example (https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html).
+"""
+"""
+    Modified by Zhichen Zeng,
+    Self-attention output with 2D maxpooling attention map.
 """
 
 import torch
@@ -14,8 +18,8 @@ def is_hip():
 @triton.jit
 def _attn_fwd_inner(acc, l_i, m_i, q,  #
                     K_block_ptr, V_block_ptr,  #
-                    R1_block_ptr, R2_block_ptr,  #
-                    Po_block_ptr,  #
+                    R_block_ptr,  #
+                    A_block_ptr,  #
                     start_m, qk_scale,  #
                     BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  #
                     STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  #
@@ -31,7 +35,6 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         lo, hi = 0, N_CTX
     K_block_ptr = tl.advance(K_block_ptr, (0, lo))
     V_block_ptr = tl.advance(V_block_ptr, (lo, 0))
-    R1_block_ptr = tl.advance(R1_block_ptr, (0, lo // BLOCK_M))
     # loop over k, v and update accumulator
     for start_n in range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
@@ -41,18 +44,13 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
 
         if STAGE == 2:
             mask = offs_m[:, None] >= (start_n + offs_n[None, :])
-            qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
-            max = tl.max(qk, 1)
-            m_ij = tl.maximum(m_i, max)
-            qk -= m_ij[:, None]
-        else:
-            max = tl.max(qk, 1) * qk_scale
-            m_ij = tl.maximum(m_i, max)
-            qk = qk * qk_scale - m_ij[:, None]
-        
-        tl.store(R1_block_ptr, max[:, None].to(tl.bfloat16))
+            qk += tl.where(mask, 0, -1.0e6)
 
-        R1_block_ptr = tl.advance(R1_block_ptr, (0, 1))
+        max = tl.max(qk, 1) * qk_scale
+        m_ij = tl.maximum(m_i, max)
+        qk = qk * qk_scale - m_ij[:, None]
+        
+        tl.store(tl.advance(R_block_ptr, (0, start_n // BLOCK_N)), max[:, None].to(q.dtype))
 
         p = tl.math.exp2(qk)
         l_ij = tl.sum(p, 1)
@@ -66,7 +64,7 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         if fp8_v:
             p = p.to(tl.float8e5)
         else:
-            p = p.to(tl.bfloat16)
+            p = p.to(q.dtype)
         acc = tl.dot(p, v, acc)
         # update m_i and l_i
         m_i = m_ij
@@ -77,26 +75,26 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
     if STAGE == 2:
         for start_n in range(0, (start_m + 1) * BLOCK_N, BLOCK_N):
             start_n = tl.multiple_of(start_n, BLOCK_N)
-            row_max = tl.load(R2_block_ptr)
+            row_max = tl.load(R_block_ptr)
             xi = row_max - m_i[:, None]
             row_max = tl.exp2(xi)/l_i[:, None]
             col_max = tl.max(row_max, 0)
-            col_max = col_max[:, None].to(tl.bfloat16)
-            tl.store(Po_block_ptr, col_max)
-            Po_block_ptr = tl.advance(Po_block_ptr, (0, 1))
-            R2_block_ptr = tl.advance(R2_block_ptr, (0, 1))
+            col_max = col_max[:, None].to(q.dtype)
+            tl.store(A_block_ptr, col_max)
+            A_block_ptr = tl.advance(A_block_ptr, (0, 1))
+            R_block_ptr = tl.advance(R_block_ptr, (0, 1))
 
     elif STAGE == 3: 
         for start_n in range(lo, hi, BLOCK_N):
             start_n = tl.multiple_of(start_n, BLOCK_N)
-            row_max = tl.load(R2_block_ptr)
+            row_max = tl.load(R_block_ptr)
             xi = row_max - m_i[:, None]
             row_max = tl.exp2(xi)/l_i[:, None]
             col_max = tl.max(row_max, 0)
-            col_max = col_max[:, None].to(tl.bfloat16)
-            tl.store(Po_block_ptr, col_max)
-            Po_block_ptr = tl.advance(Po_block_ptr, (0, 1))
-            R2_block_ptr = tl.advance(R2_block_ptr, (0, 1))
+            col_max = col_max[:, None].to(q.dtype)
+            tl.store(A_block_ptr, col_max)
+            A_block_ptr = tl.advance(A_block_ptr, (0, 1))
+            R_block_ptr = tl.advance(R_block_ptr, (0, 1))
 
     return acc, l_i, m_i
 
@@ -165,7 +163,7 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
         order=(1, 0),
     )
     
-    R1_block_ptr = tl.make_block_ptr(
+    R_block_ptr = tl.make_block_ptr(
         base=R + r_offset,
         shape=(N_CTX, N_DOWNSAMPLE),
         strides=(stride_rm, stride_rn),
@@ -174,16 +172,7 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
         order=(0, 1),
 
     )
-    R2_block_ptr = tl.make_block_ptr(
-        base=R + r_offset,
-        shape=(N_CTX, N_DOWNSAMPLE),
-        strides=(stride_rm, stride_rn),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, 1),
-        order=(0, 1),
-
-    )
-    Po_block_ptr = tl.make_block_ptr(
+    A_block_ptr = tl.make_block_ptr(
         base=Po + po_offset,
         shape=(N_DOWNSAMPLE, N_DOWNSAMPLE),
         strides=(stride_pom, stride_pon),
@@ -208,8 +197,8 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
     # For causal = False, STAGE = 1, and _attn_fwd_inner gets 3 as its STAGE
     if STAGE & 1:
         acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr,  #
-                                        R1_block_ptr, R2_block_ptr,  #
-                                        Po_block_ptr,  #
+                                        R_block_ptr,  #
+                                        A_block_ptr,  #
                                         start_m, qk_scale,  #
                                         BLOCK_M, HEAD_DIM, BLOCK_N,  #
                                         4 - STAGE, offs_m, offs_n, N_CTX, V.dtype.element_ty == tl.float8e5  #
@@ -219,8 +208,8 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
         # barrier makes it easier for compielr to schedule the
         # two loops independently
         acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr,  #
-                                        R1_block_ptr, R2_block_ptr,  #
-                                        Po_block_ptr,  #
+                                        R_block_ptr,  #
+                                        A_block_ptr,  #
                                         start_m, qk_scale,  #
                                         BLOCK_M, HEAD_DIM, BLOCK_N,  #
                                         2, offs_m, offs_n, N_CTX, V.dtype.element_ty == tl.float8e5  #
@@ -283,12 +272,6 @@ class _attention_pooling(torch.autograd.Function):
             **extra_kern_args)
         Sum = torch.sum(Po, dim=-1, keepdim=True)
         Po.div_(Sum)
-        
-        # ctx.save_for_backward(q, k, v, o, M)
-        # ctx.grid = grid
-        # ctx.sm_scale = sm_scale
-        # ctx.HEAD_DIM = HEAD_DIM_K
-        # ctx.causal = causal
         return o, Po
 
 attn_with_pooling = _attention_pooling.apply

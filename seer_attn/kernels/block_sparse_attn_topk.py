@@ -1,14 +1,15 @@
 """
-Block sparse attn Modified from Triton's official fused attetnion example (https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html)
-
+    Original code from Triton's official fused attetnion example (https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html).
+"""
+"""
+    Modified by Zhichen Zeng,
+    Block sparse attention with topk sparsity pattern.
 """
 
-import pytest
 import torch
 
 import triton
 import triton.language as tl
-import torch.nn.functional as F
 
 
 def is_hip():
