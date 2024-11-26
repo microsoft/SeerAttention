@@ -38,6 +38,8 @@ class LlamaConfig(PretrainedConfig):
         attn_gate_type='Qavg_Kmaxmin',
         gate_block_size=64, ## currently only support 64
         gate_hidden_size=128,
+        kernel_implementation='TopK',
+        use_dense_for_last_block=False,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -67,6 +69,9 @@ class LlamaConfig(PretrainedConfig):
         self.attn_gate_type = attn_gate_type
         self.gate_block_size = gate_block_size
         self.gate_hidden_size = gate_hidden_size
+        self.kernel_implementation = kernel_implementation
+        self.use_dense_for_last_block = use_dense_for_last_block
+        assert self.kernel_implementation in ['TopK', 'CSR']
 
         if self.rope_scaling is not None and "type" in self.rope_scaling:
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
