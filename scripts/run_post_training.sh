@@ -17,7 +17,7 @@ torchrun --nproc_per_node=4 --master_port=10002 post_training.py  \
         --evaluation_strategy "no"     \
         --save_strategy "no"     \
         --learning_rate 1e-3     \
-        --weight_decay 1e-2     \
+        --weight_decay 0.0     \
         --warmup_steps 20     \
         --lr_scheduler_type "cosine"     \
         --logging_steps 1     \
