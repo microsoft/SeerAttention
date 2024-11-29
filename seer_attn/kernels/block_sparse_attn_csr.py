@@ -22,6 +22,10 @@ import os
 import dataclasses
 
 
+
+def is_hip():
+    return triton.runtime.driver.active.get_current_target().backend == "hip"
+
 # helper functions for 3D sparse pattern
 # these function are not optimized and very inefficient. Avoid calling them too frequent.
 # currently, it is only called within `get_local_strided_sparse_attention_op`, which is cached.
@@ -493,12 +497,20 @@ def _forward(ctx, q, k, v, block_sparse_dense, sm_scale, BLOCK_M=64, BLOCK_N=64,
     assert q.shape[-1] in [64, 128]
     BLOCK_DMODEL = 64
 
-    if num_warps is None:
-        MIN_D = min(BLOCK_M, BLOCK_N, BLOCK_DMODEL)
-        num_warps = max(1, 2 ** int(math.log2(MIN_D / 16)))
-        # print(f'> {BLOCK_M=}, {BLOCK_N=}, {BLOCK_DMODEL=}, {num_warps=}, {num_stages=}')
+    # if num_warps is None:
+    #     MIN_D = min(BLOCK_M, BLOCK_N, BLOCK_DMODEL)
+    #     num_warps = max(1, 2 ** int(math.log2(MIN_D / 16)))
+    #     # print(f'> {BLOCK_M=}, {BLOCK_N=}, {BLOCK_DMODEL=}, {num_warps=}, {num_stages=}')
+    # else:
+    #     assert math.log2(num_warps) % 1 == 0, f'''"num_warps" should be power of 2, but got {num_warps}.'''
+
+
+    if is_hip():
+        num_warps, num_stages = 8, 1
     else:
-        assert math.log2(num_warps) % 1 == 0, f'''"num_warps" should be power of 2, but got {num_warps}.'''
+        num_warps, num_stages = 4, 2
+
+
 
     ## For debugging:
     # print(f'>> {q.shape=}, {k.shape=}, {BLOCK_M=}, {BLOCK_N=}, {num_warps=}, {BLOCK_DMODEL=}, {q.stride()=}, {k.stride()=}')
@@ -583,6 +595,11 @@ def _backward(ctx, do, dq=None, dk=None, dv=None):
 
     grid = (triton.cdiv(q.shape[2], ctx.BLOCK_N), ctx.grid[1])
 
+    if is_hip():
+        num_warps, num_stages = 2, 4
+    else:
+        num_warps, num_stages = 4, 2
+
 
     _bwd_dkdv[grid](
         q, k, v, ctx.sm_scale,
@@ -603,8 +620,8 @@ def _backward(ctx, do, dq=None, dk=None, dv=None):
         BLOCK_M=ctx.BLOCK_M,
         BLOCK_N=ctx.BLOCK_N,
         BLOCK_DMODEL=q.shape[-1],
-        num_warps=4,
-        num_stages=4,
+        num_warps=num_warps,
+        num_stages=num_stages,
     )
 
     _bwd_dq_kernel[grid](
@@ -622,8 +639,8 @@ def _backward(ctx, do, dq=None, dk=None, dv=None):
         BLOCK_M=ctx.BLOCK_M,
         BLOCK_N=ctx.BLOCK_N,
         BLOCK_DMODEL=q.shape[-1],
-        num_warps=4,
-        num_stages=4,
+        num_warps=num_warps,
+        num_stages=num_stages,
     )
 
     return dq, dk, dv, None, None, None
