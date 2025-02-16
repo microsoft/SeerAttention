@@ -1,22 +1,5 @@
 # Evaluation of SeerAttention
 
-## Sparse Attention Kernel Efficiency
-To improve the efficiency of the sparse attention kernel, we have customized the CUDA kernel to accelerate the attention computation. First, compile the kernel:
-
-```bash
-cd seer_attn/kernels/block_sparse_attention
-make build
-```
-For the performance of sparse attention kernel, please refer to `benchmark_sparse_attn.py`.
-
-```bash
-pip install flash-attn --no-build-isolation
-
-cd eval/efficiency
-python benchmark_sparse_attn.py --seq_len 8192 --sparsity 0.9 0.8 0.7 0.6 0.5
-python benchmark_sparse_attn.py --seq_len 32768 --sparsity 0.9 0.8 0.7 0.6 0.5
-python benchmark_sparse_attn.py --seq_len 131072 --sparsity 0.9 0.8 0.7 0.6 0.5
-```
 
 ## Perplexity on PG19
 For the perplexity test, we adopts TopK (nz_ratio) based sparsity method. 
@@ -64,3 +47,8 @@ For the RULER benchmark, we use Threshold based sparsity method. The threshold i
 | 32k      | 100           | 100           | 100           | 100             | 96              | 100             | 92              | 99              | 99.2 | 50.8  | 93.33 | 72   | 48   | 88.49  |
 | 64k      | 100           | 100           | 100           | 100             | 100             | 92              | 94              | 99              | 97.6 | 8     | 82.67 | 64   | 48   | 83.48  |
 | 128k     | 100           | 100           | 100           | 100             | 76              | 56              | 94              | 94              | 75.2 | 0     | 66.67 | 64   | 28   | 73.37  |
+
+
+## Sparse Attention Kernel Efficiency
+
+![Efficiency](../figures/efficiency.png)
