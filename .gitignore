@@ -408,3 +408,5 @@ amlt*
 sing*
 .amltignore
 test_script.sh
+cache_dir
+*.egg-info

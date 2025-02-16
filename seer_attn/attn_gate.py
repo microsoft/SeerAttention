@@ -84,7 +84,7 @@ class AttnGate(nn.Module):
 
     # q shape (batch_size, num_q_head, seq_length, channel_size)
     # k shape (batch_size, num_k_head, seq_length, channel_size)
-    def forward(self, q, k, attention_mask, position_embeddings=None, is_training=True):  
+    def forward(self, q, k, attention_mask, position_embeddings=None, use_softmax=True):  
         q, k, attention_mask = q.contiguous(), k.contiguous(), attention_mask.contiguous()
 
         q_pooled = [pool_func(q, kernel_size=[self.block_size, 1], stride=[self.block_size, 1], ceil_mode=True) for pool_func in self.q_pooling_funcs]
@@ -103,15 +103,14 @@ class AttnGate(nn.Module):
         if k.shape[1] < self.num_q_head:
             k = repeat_kv(k, self.num_q_head // k.shape[1])
         
-        if is_training:
-            attn = torch.matmul(q, k.transpose(-1, -2)) / torch.sqrt(torch.tensor(self.hidden_size).float())
-            attn = attn + attention_mask
-            attn = F.softmax(attn, dim=-1)
+        attn = torch.matmul(q, k.transpose(-1, -2)) / torch.sqrt(torch.tensor(self.hidden_size).float())
+        if attention_mask.dtype == torch.bool:
+            attn = attn.masked_fill(~attention_mask, -1e9)
         else:
-            attn = torch.matmul(q, k.transpose(-1, -2))
             attn = attn + attention_mask
+        if use_softmax:
+            attn = F.softmax(attn, dim=-1)
         return attn
-
 
 
 POOL_FUNCS = {
@@ -121,13 +120,12 @@ POOL_FUNCS = {
 }
 
 
-def create_attngate_class(q_pooling_names, k_pooling_names):
+def _create_generic_attngate_class(base_class, suffix, q_pooling_names, k_pooling_names):
     q_pooling_funcs = [POOL_FUNCS[name] for name in q_pooling_names]
     k_pooling_funcs = [POOL_FUNCS[name] for name in k_pooling_names]
+    class_name = f"Q{''.join(q_pooling_names)}_K{''.join(k_pooling_names)}{suffix}"
 
-    class_name = f"Q{''.join(q_pooling_names)}_K{''.join(k_pooling_names)}"
-    
-    class NewAttnGate(AttnGate):
+    class NewAttnGate(base_class):
         def __init__(self, block_size, in_channel_size, hidden_size, num_k_head, num_q_head):
             super(NewAttnGate, self).__init__(
                 block_size=block_size,
@@ -138,7 +136,6 @@ def create_attngate_class(q_pooling_names, k_pooling_names):
                 q_pooling_funcs=q_pooling_funcs,
                 k_pooling_funcs=k_pooling_funcs
             )
-
     NewAttnGate.__name__ = class_name
     return class_name, NewAttnGate
 
@@ -151,9 +148,8 @@ def generate_combinations():
         for k_comb in range(1, 4):
             for q_pooling_comb in combinations(pool_types, q_comb):
                 for k_pooling_comb in combinations(pool_types, k_comb):
-                    class_name, new_class = create_attngate_class(q_pooling_comb, k_pooling_comb)
+                    class_name, new_class = _create_generic_attngate_class(AttnGate, '', q_pooling_comb, k_pooling_comb)
                     new_classes[class_name] = new_class
-
     return new_classes
 
 

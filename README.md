@@ -1,64 +1,57 @@
 # SeerAttention: Learning Intrinsic Sparse Attention in Your LLMs
 
-[[arxiv paper](https://arxiv.org/abs/2410.13276)] 
+[![arXiv](https://img.shields.io/badge/arXiv-2410.13276-b31b1b.svg)](https://arxiv.org/abs/2410.13276)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-SeerAttention is a learning-based method to enable block-level sparse attention for long-context LLM without using prefined static pattern or heuristic methods. It can be applied in Post-training or Fine-tuning stages. The Attention Gate units learn from the intrinsic sparsity in the pre-trained models.  
-
-![SeerAttn](figures/SeerAttn.png)
-
-
-The AttnGate units perform pooling in sequence dimension and predict the estimated max attention score of a block. By applying row-wise TopK on top the results, sparse block indices can be generated. 
-
-<div style="text-align: center;">
-    <img src="figures/illustration.png" alt="drawing" width="550"/>
-</div>
+![SeerAttention Architecture](figures/seer.png)
 
 
-## Environment
+Official implementation of **SeerAttention** - a novel sparse attention mechanism that learns intrinsic sparsity patterns directly from LLMs through self-distillation. Achieves faster inference while maintaining accuracy for long-context processing.
+
+
+
+
+## Key Features
+**Block-level Sparsity** - Learns dynamic sparsity patterns at block level  
+**Self-Distillation** - Lightweight training of attention gates (original weights frozen)  
+**Efficient Kernel** - Custom block-sparse FlashAttention implementation  
+**Better Accuracy** - Outperforms static/heuristic sparse attention methods  
+**Easy Integration** - Works with existing transformer architectures
+
+## Quick Start
+### 1. Environment
 ```bash
 conda create -yn seer python=3.11
 conda activate seer
 pip install torch==2.4.0
 pip install -r requirements.txt
+pip install -e . 
 ```
 
 
-## Download the pretrained models for experiments
+### 2. Download the pretrained models
 ```bash
 mkdir models
-huggingface-cli download meta-llama/Llama-3.1-8B --local-dir  models/meta-llama/Llama-3.1-8B
-huggingface-cli download meta-llama/Meta-Llama-3-8B --local-dir  models/meta-llama/Meta-Llama-3-8B
 huggingface-cli download meta-llama/Llama-3.1-8B-Instruct --local-dir  models/meta-llama/Llama-3.1-8B-Instruct
 ```
 
+### 3. Traing Attention Gates with Self-distillation
+Only AttnGates are trained to mimic the block-level attention score. In other words, the original model's weights are fronzen. 
 
-## Post-training with SeerAttention
-Only AttnGates are trained in Post-training case. In other words, the original model's weights are untouched. The AttnGates are trained using the 2D maxpooled attention map from the original model in a given training/calibration dataset.
-
-Run the below script to reproduce the results on llama-3.1-8B. Once you obtain the model with AttnGates, different sparsity ratios can be applied. PPL results will be evaluated on pg19 and proof-pile datasets.
 ```bash
-bash scripts/run_post_training.sh
+bash run_distillation.sh
 ```
 
+The core idea of self-distillation training is to use the 2d-maxpooled attention map from original model to train an AttnGate. We provide an efficient kernel to directly output this ground truth. 
 
-## Fine-tuning with SeerAttention
-You can fine-tuning a model during long-context extension with SeerAttention. Both original models and AttnGates are tuned. To stabilize the training process, the AttnGates will first be initialized using the Post-training method before context length extension. 
 
-Run the below scripts to reproduce the dense baseline and Seerattention (50% sparsity) results of extending llama-3-8B from 8k to 32k. 
-```bash
-bash scripts/run_dense_yarn_finetuning.sh
-bash scripts/run_seerattn_yarn_finetuning.sh
-```
-
-## Experiment with other AttnGate designs
-The current AttnGate design is simple, only pooling + linear layers. You are encouraged to contribute your own design and train with our customized attention pooling kernel that generates ground truth. It is a functional self-attention kernel but also outputs the 2D maxpooled (block-size 64) attention map.
 ```python
-from seer_attn.kernels.attn_pooling_kernel import attn_with_pooling
-###...
+### simple pseudo codo for self-distillation AttnGate training
+from seer_attn.attn_pooling_kernel import attn_with_pooling
 
-predict_mask = your_gate_design(...)
+predict_mask = attn_gate(...)
 
-attn_output, pooling_gt = attn_with_pooling(
+attn_output, mask_ground_truth = attn_with_pooling(
     query_states,
     key_states,
     value_states,
@@ -68,17 +61,38 @@ attn_output, pooling_gt = attn_with_pooling(
 )
 
 ###...
-loss = mse(predict_mask, pooling_gt)   
+loss = self.loss_func(predict_mask, mask_ground_truth)   
 ```
-## Inference Kerenel Development
-Our current block sparse attention inference kernel is experimental.
-We have two different implementations under `seer_attn/kernels`:
 
-- block_sparse_attn_topk: directly takes torch.topk.indices as input. No backward support yet.
-- block_sparse_attn_csr: modified from phi-3-small kernel. Use CSR to encode sparse blocks. It has backward that can be used in fine-tuning. Currently only support batch-size = 1. 
+### 4. Inference with Sparse Attention
+SeerAttention supports two sparse methods (Threshold / TopK)to convert a soft gating score to hard binary attention mask. Currently we simply use a single sparse configuration for all the attention heads. 
+```python
+from seer_attn import SeerAttnLlamaForCausalLM
 
-You can choose the inference kernel by setting `kernel_implementation="TopK" or "CSR"` in model config. 
+# Using a threshold based sparse method
+model = SeerAttnLlamaForCausalLM.from_pretrained(
+    '/path/to/your/model/',
+    torch_dtype=torch.bfloat16,
+    seerattn_sparsity_method='threshold', 
+    seerattn_threshold = 5e-4, # Higher = sparser, typical range 5e-4 ~ 2e-3
+)
 
+
+# Or using a TopK based sparse method
+model = SeerAttnLlamaForCausalLM.from_pretrained(
+    '/path/to/your/model/',
+    torch_dtype=torch.bfloat16,
+    seerattn_sparsity_method='nz_ratio', 
+    seerattn_nz_ratio = 0.5, # Lower = sparser, typical range 0.1 ~ 0.9
+)
+
+model = model.cuda()
+
+# Ready to inference
+```
+
+## Evaluation
+We evaluate SeerAttention on PG19, Ruler and LongBench. Please refer to `eval` folder for details. 
 
 ## Citation
 

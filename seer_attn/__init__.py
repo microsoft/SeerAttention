@@ -1,9 +1,9 @@
-from seer_attn.modeling_llama_seerattn_post_training import LlamaForCausalLMSeerAttnPT
-from seer_attn.modeling_llama_seerattn_inference import LlamaForCausalLMSeerAttnInf
-from seer_attn.modeling_llama_seerattn_fine_tuning import LlamaForCausalLMSeerAttnFT
 
+from seer_attn.modeling_llama_seerattn import SeerAttnLlamaForCausalLM
+from kernels.attn_pooling_kernel import attn_with_pooling
+from kernels.block_sparse_attn import sparse_attention_factory
 __all__ = [
-    "LlamaForCausalLMSeerAttnPT"
-    "LlamaForCausalLMSeerAttnInf"
-    "LlamaForCausalLMSeerAttnFT"
+    "SeerAttnLlamaForCausalLM",
+    "attn_with_pooling",
+    "sparse_attention_factory",
 ]
