@@ -1,4 +1,4 @@
-transformers==4.44.2
+transformers==4.48.0
 accelerate
 deepspeed==0.15.4
 datasets
