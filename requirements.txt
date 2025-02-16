@@ -9,3 +9,4 @@ pytest
 huggingface_hub
 sentencepiece
 protobuf
+tabulate

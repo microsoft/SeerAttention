@@ -92,7 +92,7 @@ model = model.cuda()
 ```
 
 ## Evaluation
-We evaluate SeerAttention on PG19, Ruler and LongBench. Please refer to `eval` folder for details. 
+For efficiency, we evaluate `block_sparse_attn` compared with full attention by FlashAttention-2. For model accuracy, we evaluate SeerAttention on PG19, Ruler and LongBench. Please refer to `eval` folder for details. 
 
 ## Citation
 
