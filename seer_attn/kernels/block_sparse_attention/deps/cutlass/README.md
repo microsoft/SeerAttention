@@ -1,4 +1,4 @@
-![ALT](/media/images/gemm-hierarchy-with-epilogue-no-labels.png "Complete CUDA GEMM decomposition")
+![ALT]("Complete CUDA GEMM decomposition")
 
 # CUTLASS 3.4
 
