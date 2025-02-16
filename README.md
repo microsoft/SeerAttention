@@ -18,7 +18,17 @@ Official implementation of **SeerAttention** - a novel sparse attention mechanis
 **Better Accuracy** - Outperforms static/heuristic sparse attention methods  
 **Easy Integration** - Works with existing transformer architectures
 
+
+
+## HF models
+
+The trained AttnGate with base model [meta-llama/Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) is avaliable on Hugging Face! 
+| Model | HF Link |
+|-------|---------|
+| SeerAttention-Llama-3.1-8B | [SeerAttention/SeerAttention-Llama-3.1-8B](https://huggingface.co/SeerAttention/SeerAttention-Llama-3.1-8B) |
+
 ## Quick Start
+
 ### 1. Environment
 ```bash
 conda create -yn seer python=3.11
@@ -63,6 +73,7 @@ attn_output, mask_ground_truth = attn_with_pooling(
 ###...
 loss = self.loss_func(predict_mask, mask_ground_truth)   
 ```
+
 
 ### 4. Inference with Sparse Attention
 SeerAttention supports two sparse methods (Threshold / TopK)to convert a soft gating score to hard binary attention mask. Currently we simply use a single sparse configuration for all the attention heads. 
