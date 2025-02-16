@@ -2,4 +2,3 @@ __pycache__/
 build/
 .cache/
 dist/
-my_block_sparse_attn.egg-info/

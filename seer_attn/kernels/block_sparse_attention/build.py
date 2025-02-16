@@ -75,9 +75,9 @@ ext_modules.append(
         include_dirs=[
             Path(this_dir) / "csrc",
             Path(this_dir) / "include",
-            Path(this_dir) / "deps/cutlass/include",
-            Path(this_dir) / "deps/cutlass/tools/utils/include" ,
-            Path(this_dir) / "deps/cutlass/examples/common" ,
+            Path(this_dir) / "../../../third_party/cutlass/include",
+            Path(this_dir) / "../../../third_party/cutlass/tools/utils/include" ,
+            Path(this_dir) / "../../../third_party/cutlass/examples/common" ,
         ],
     )
 )
