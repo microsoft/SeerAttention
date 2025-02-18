@@ -45,7 +45,7 @@ mkdir models
 huggingface-cli download meta-llama/Llama-3.1-8B-Instruct --local-dir  models/meta-llama/Llama-3.1-8B-Instruct
 ```
 
-### 3. Traing Attention Gates with Self-distillation
+### 3. Training Attention Gates with Self-distillation
 Only AttnGates are trained to mimic the block-level attention score. In other words, the original model's weights are fronzen. 
 
 ```bash
@@ -76,7 +76,7 @@ loss = self.loss_func(predict_mask, mask_ground_truth)
 
 
 ### 4. Inference with Sparse Attention
-SeerAttention supports two sparse methods (Threshold / TopK)to convert a soft gating score to hard binary attention mask. Currently we simply use a single sparse configuration for all the attention heads. 
+SeerAttention supports two sparse methods (Threshold / TopK) to convert a soft gating score to hard binary attention mask. Currently we simply use a single sparse configuration for all the attention heads. 
 ```python
 from seer_attn import SeerAttnLlamaForCausalLM
 
@@ -103,7 +103,12 @@ model = model.cuda()
 ```
 
 ## Evaluation
-For efficiency, we evaluate `block_sparse_attn` compared with full attention by FlashAttention-2. For model accuracy, we evaluate SeerAttention on PG19, Ruler and LongBench. Please refer to `eval` folder for details. 
+For efficiency, we evaluate `block_sparse_attn` compared with full attention by FlashAttention-2. 
+
+![SeerAttention Kernel Efficiency](figures/efficiency.png)
+
+
+For model accuracy, we evaluate SeerAttention on PG19, Ruler and LongBench. Please refer to `eval` folder for details. 
 
 ## Citation
 
