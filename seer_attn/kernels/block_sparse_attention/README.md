@@ -1,6 +1,7 @@
 # block-sparse-attention
 
 Custom block-sparse FlashAttention implementation.
+The kernel is still being improved. It's still buggy in some corner cases. 
 
 ## Usage
 ```make build```
