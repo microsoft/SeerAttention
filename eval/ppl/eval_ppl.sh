@@ -1,7 +1,5 @@
-# model_path="../../models/seer_attn_llama_3.1/Qavg_Kmaxminavg_lr1e-3_maxlen65536_warmup20_bs16_steps500_gatelossscale10.0"
+model_path="../../models/seer_attn_llama_3.1/Qavg_Kmaxminavg_lr1e-3_maxlen65536_warmup20_bs16_steps500_gatelossscale10.0"
 # change model to the path of your model if needed
-
-model_path="/home/v-yizhaogao/workspace/SeerAttention_icml/models/Qavg_Kmaxminavg"
 CUDA_VISIBLE_DEVICES=0 python eval_ppl.py \
     -m $model_path \
     --split test \
