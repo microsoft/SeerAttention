@@ -27,7 +27,7 @@ class AttnGateTrainer(Trainer):
         self.orig_weight_training = orig_weight_training
         self.fix_mask_predictor = fix_mask_predictor
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, **kwargs):
         step = self.state.global_step
         outputs = model(**inputs)
 
@@ -37,14 +37,13 @@ class AttnGateTrainer(Trainer):
 
         mask_loss = outputs.get("mask_loss")
         
-        if not return_outputs:
-            del outputs
+        del outputs
             
         if self.orig_weight_training:
             tok_loss = original_loss + self.gate_loss_scale * mask_loss
         else:
             tok_loss = self.gate_loss_scale * mask_loss
         
-        return (tok_loss, outputs) if return_outputs else tok_loss
+        return tok_loss
     
      
