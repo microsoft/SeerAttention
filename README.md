@@ -6,7 +6,7 @@
 ![SeerAttention Architecture](figures/seer.png)
 
 
-Official implementation of **SeerAttention** - a novel sparse attention mechanism that learns intrinsic sparsity patterns directly from LLMs through self-distillation. Achieves faster inference while maintaining accuracy for long-context processing.
+Official implementation of **SeerAttention** - a novel trainable sparse attention mechanism that learns intrinsic sparsity patterns directly from LLMs through self-distillation at post-training time. Achieves faster inference while maintaining accuracy for long-context processing.
 
 
 
