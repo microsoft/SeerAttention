@@ -13,4 +13,4 @@ To reproduce SeerAttn results on RULER, run:
     bash eval_ruler.sh
 ```
 
-Noted that the huggingface-hub version in RULER might confict with others. Be mindful if you encounter any error. 
+Noted that the some package version like huggingface-hub in RULER might confict with others. If you find any errors, feel free to leave an issue.

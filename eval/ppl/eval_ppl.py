@@ -4,9 +4,9 @@ import gc
 import sys
 import torch
 import warnings
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from tqdm import tqdm
-from seer_attn import SeerAttnLlamaForCausalLM
+from seer_attn import SeerAttnLlamaForCausalLM, SeerAttnQwen2ForCausalLM
 import os
 
 
@@ -96,11 +96,12 @@ def compute_perplexity(
 
 
 def main(args):
-    models = [x[0] for x in args.model]
+    config = AutoConfig.from_pretrained(args.model)
+    base_dir = config.base_model
+    
     tokenizer = AutoTokenizer.from_pretrained(
-        models[0], 
+        base_dir, 
         trust_remote_code=True,
-        cache_dir=args.cache_dir,
     )
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -111,11 +112,11 @@ def main(args):
         except:
             input_texts = datasets.load_dataset(
                 args.tokenized, name=args.subset, split=args.split, 
-                cache_dir=args.cache_dir, trust_remote_code=True)
+                trust_remote_code=True)
     else:
         input_texts = datasets.load_dataset(
             args.dataset, name=args.subset, split=args.split, 
-            cache_dir=args.cache_dir, trust_remote_code=True)
+            trust_remote_code=True)
 
         def tokenize(example):
             tokenized = tokenizer(
@@ -150,11 +151,12 @@ def main(args):
             break
 
     results = []
-    for model_path in tqdm(models, desc="Model"):
-        torch.cuda.empty_cache()
-        
-        # Model loading with config parameters
-        if args.use_seer_attn:
+    model_path = args.model
+    torch.cuda.empty_cache()
+    
+    # Model loading with config parameters
+    if args.use_seer_attn:
+        if "llama" in model_path.lower():
             model = SeerAttnLlamaForCausalLM.from_pretrained(
                 model_path,
                 torch_dtype=torch.bfloat16,
@@ -165,41 +167,38 @@ def main(args):
                 seerattn_gate_type=args.gate_type,
                 seerattn_last_block_dense=False,
             )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
+        elif "qwen" in model_path.lower():
+            model = SeerAttnQwen2ForCausalLM.from_pretrained(
                 model_path,
                 torch_dtype=torch.bfloat16,
                 device_map='auto',
+                seerattn_sparsity_method=args.sparsity_method,
+                seerattn_threshold=float(args.threshold.split(",")[0]),
+                seerattn_nz_ratio=float(args.nz_ratios.split(",")[0]),
+                seerattn_gate_type=args.gate_type,
+                seerattn_last_block_dense=False,
             )
+        else:
+            raise ValueError("Model unsupported for SeerAttn")
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            device_map='auto',
+            attn_implementation="flash_attention_2"
+        )
 
-        result = []
-        for max_length in tokens:
-            if args.use_seer_attn:
-                params = (args.threshold.split(",") if args.sparsity_method == 'threshold' 
-                          else args.nz_ratios.split(","))
-                for param_val in params:
-                    if args.sparsity_method == 'threshold':
-                        model.config.seerattn_threshold = float(param_val)
-                    else:
-                        model.config.seerattn_nz_ratio = float(param_val)
-                    
-                    output = compute_perplexity(
-                        model=model, 
-                        tokenizer=tokenizer, 
-                        encodings=input_texts,
-                        add_start_token=tokenizer.bos_token is not None, 
-                        max_length=max_length,
-                        sliding_window=args.sliding_window, 
-                        truncate=args.truncate,
-                    )
-                    ppl = output['mean_perplexity']
-                    sparsity = output['sparsity']
-                    result_str = (f"{model_path}: {max_length}tokens | "
-                                  f"{args.sparsity_method}={param_val} | "
-                                  f"ppl={ppl:.2f} | density={sparsity:.2f}")
-                    print(result_str)
-                    result.append(result_str)
-            else:
+    result = []
+    for max_length in tokens:
+        if args.use_seer_attn:
+            params = (args.threshold.split(",") if args.sparsity_method == 'threshold' 
+                        else args.nz_ratios.split(","))
+            for param_val in params:
+                if args.sparsity_method == 'threshold':
+                    model.config.seerattn_threshold = float(param_val)
+                else:
+                    model.config.seerattn_nz_ratio = float(param_val)
+                
                 output = compute_perplexity(
                     model=model, 
                     tokenizer=tokenizer, 
@@ -210,11 +209,28 @@ def main(args):
                     truncate=args.truncate,
                 )
                 ppl = output['mean_perplexity']
-                result_str = f"{model_path}: {max_length}tokens | ppl={ppl:.2f}"
+                sparsity = output['sparsity']
+                result_str = (f"{model_path}: {max_length}tokens | "
+                                f"{args.sparsity_method}={param_val} | "
+                                f"ppl={ppl:.2f} | density={sparsity:.2f}")
                 print(result_str)
                 result.append(result_str)
+        else:
+            output = compute_perplexity(
+                model=model, 
+                tokenizer=tokenizer, 
+                encodings=input_texts,
+                add_start_token=tokenizer.bos_token is not None, 
+                max_length=max_length,
+                sliding_window=args.sliding_window, 
+                truncate=args.truncate,
+            )
+            ppl = output['mean_perplexity']
+            result_str = f"{model_path}: {max_length}tokens | ppl={ppl:.2f}"
+            print(result_str)
+            result.append(result_str)
 
-        results.append(result)
+    results.append(result)
 
     # Save results (same as original)
     if args.output_file:
@@ -227,7 +243,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # Original arguments
-    parser.add_argument("-m", "--model", action="append", nargs="+", required=True)
+    parser.add_argument("-m", "--model", required=True)
     parser.add_argument("-d", "--dataset", type=str)
     parser.add_argument("-s", "--subset", type=str)
     parser.add_argument("-f", "--feature", type=str)
@@ -241,7 +257,6 @@ if __name__ == "__main__":
     parser.add_argument("--save-tokenized", type=str)
     parser.add_argument("--tokenized", type=str)
     parser.add_argument("--output-file", type=str)
-    parser.add_argument("--cache_dir", default='/dev/shm/cache')
     parser.add_argument("--use_seer_attn", action="store_true")
     
     # New sparsity parameters

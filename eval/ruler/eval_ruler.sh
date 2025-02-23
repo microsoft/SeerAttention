@@ -1,6 +1,6 @@
-model=../../models/seer_attn_llama_3.1/Qavg_Kmaxminavg_lr1e-3_maxlen65536_warmup20_bs16_steps500_gatelossscale10.0
+model="SeerAttention/SeerAttention-Llama-3.1-8B-AttnGates"
 # change model to the path of your model if needed
-basedir=./results/ruler
+basedir=./results/llama
 threshold=5e-4
 export CUDA_VISIBLE_DEVICES=0
 export PROFILE_FILE=${basedir}/${threshold}.txt # Comment this line to disable profiling

@@ -1,6 +1,6 @@
-transformers==4.44.2
+transformers==4.49.0
 accelerate
-deepspeed==0.15.4
+deepspeed==0.16.3
 datasets
 tqdm
 numpy

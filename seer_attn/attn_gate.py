@@ -43,11 +43,7 @@ class MultiHeadLinear(nn.Module):
         self.hidden_size = hidden_size
         self.num_head = num_head
         self.weight = nn.Parameter(torch.Tensor(self.num_head, self.in_channel, self.hidden_size))
-        self._init_weight()
     
-
-    def _init_weight(self):
-        init.xavier_uniform_(self.weight)
 
     def forward(self, x): # x shape (batch_size, head, seq_length, channel_size)
         if x.shape[1] < self.num_head:
@@ -56,7 +52,7 @@ class MultiHeadLinear(nn.Module):
 
 
 class AttnGate(nn.Module):
-    def __init__(self, block_size, in_channel_size, hidden_size, num_k_head, num_q_head, q_pooling_funcs, k_pooling_funcs):
+    def __init__(self, block_size, in_channel_size, hidden_size, num_k_head, num_q_head, q_pooling_funcs, k_pooling_funcs, force_double=False):
         super(AttnGate, self).__init__()
         self.block_size = block_size
         self.in_channel = in_channel_size
@@ -75,7 +71,7 @@ class AttnGate(nn.Module):
         k_in_channel_size = in_channel_size * self.k_dup_size
         
         
-        if self.q_dup_size > 1 or self.hidden_size != in_channel_size:
+        if self.q_dup_size > 1 or self.hidden_size != in_channel_size or force_double:
             self.mask_linear_q = MultiHeadLinear(q_in_channel_size, self.hidden_size, self.num_q_head)
             self.mask_linear_k = MultiHeadLinear(k_in_channel_size, self.hidden_size, self.num_k_head)
         else: # Can use a single linear layer if hidden_size = in_channel_size
@@ -126,7 +122,7 @@ def _create_generic_attngate_class(base_class, suffix, q_pooling_names, k_poolin
     class_name = f"Q{''.join(q_pooling_names)}_K{''.join(k_pooling_names)}{suffix}"
 
     class NewAttnGate(base_class):
-        def __init__(self, block_size, in_channel_size, hidden_size, num_k_head, num_q_head):
+        def __init__(self, block_size, in_channel_size, hidden_size, num_k_head, num_q_head, force_double=False):
             super(NewAttnGate, self).__init__(
                 block_size=block_size,
                 in_channel_size=in_channel_size,
@@ -134,7 +130,8 @@ def _create_generic_attngate_class(base_class, suffix, q_pooling_names, k_poolin
                 num_k_head=num_k_head,
                 num_q_head=num_q_head,
                 q_pooling_funcs=q_pooling_funcs,
-                k_pooling_funcs=k_pooling_funcs
+                k_pooling_funcs=k_pooling_funcs,
+                force_double=force_double
             )
     NewAttnGate.__name__ = class_name
     return class_name, NewAttnGate

@@ -41,13 +41,14 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
-from seer_attn.configuration_llama_seerattn import SeerAttnLlamaConfig
+from seer_attn.llama.configuration_llama_seerattn import SeerAttnLlamaConfig
 from seer_attn.utils import BaseModelOutputWithPastAndSeer, CausalLMOutputWithPastAndSeer
-from seer_attn.attn_gate import ATTNGATE_CLASSES
+from seer_attn.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
 from seer_attn.kernels.attn_pooling_kernel import attn_with_pooling
 # from seer_attn.kernels.block_sparse_attn_csr import get_sparse_attn_mask_from_topk, get_sparse_attn_mask_from_threshold, sparse_attention_factory
 from seer_attn.kernels.block_sparse_attn import get_sparse_attn_mask_from_topk, get_sparse_attn_mask_from_threshold, sparse_attention_factory
 import copy, math, os
+from huggingface_hub import hf_hub_download
 
 logger = logging.get_logger(__name__)
 
@@ -302,26 +303,7 @@ class LlamaSeerAttention(nn.Module):
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         k_len = query_states.shape[-2]
-        if not self.training and q_len > 1 and q_len == k_len:
-            # get the sparse mask
-            if self.config.seerattn_sparsity_method == "nz_ratio":
-                downsampled_len = math.ceil(key_states.shape[-2] / self.config.seerattn_gate_block_size)
-                topk_nz_ratio = 1 - math.sqrt(1 - self.config.seerattn_nz_ratio)
-                topk = int(topk_nz_ratio * downsampled_len)
-                topk = 1 if topk == 0 else topk
-                ## This attention mask actually a bool type block sparse attention
-                sparse_attn_mask = get_sparse_attn_mask_from_topk(mask_gate_prediction, topk, self.config.seerattn_last_block_dense)
-            elif self.config.seerattn_sparsity_method == "threshold":
-                sparse_attn_mask = get_sparse_attn_mask_from_threshold(mask_gate_prediction, self.config.seerattn_threshold, self.config.seerattn_last_block_dense)
-                downsampled_len = sparse_attn_mask.shape[-1]
-                total_causal_size = ((1 + downsampled_len) * downsampled_len / 2) * sparse_attn_mask.shape[0] * sparse_attn_mask.shape[1]
-                if self.profile_file is not None:
-                    with open(self.profile_file, "a") as f:
-                        f.write(f"{hidden_states.shape[1]}: {sparse_attn_mask.sum().item() / total_causal_size}\n")
 
-            else:
-                raise NotImplementedError("The sparsity method is not implemented")
-        
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
         
@@ -344,6 +326,25 @@ class LlamaSeerAttention(nn.Module):
                 self.config.seerattn_gate_block_size,      
             )
         elif q_len > 1 and q_len == k_len: ## prefill inference
+            # get the sparse mask
+            if self.config.seerattn_sparsity_method == "nz_ratio":
+                downsampled_len = math.ceil(key_states.shape[-2] / self.config.seerattn_gate_block_size)
+                topk_nz_ratio = 1 - math.sqrt(1 - self.config.seerattn_nz_ratio)
+                topk = int(topk_nz_ratio * downsampled_len)
+                topk = 1 if topk == 0 else topk
+                ## This attention mask actually a bool type block sparse attention
+                sparse_attn_mask = get_sparse_attn_mask_from_topk(mask_gate_prediction, topk, self.config.seerattn_last_block_dense)
+            elif self.config.seerattn_sparsity_method == "threshold":
+                sparse_attn_mask = get_sparse_attn_mask_from_threshold(mask_gate_prediction, self.config.seerattn_threshold, self.config.seerattn_last_block_dense)
+                downsampled_len = sparse_attn_mask.shape[-1]
+                total_causal_size = ((1 + downsampled_len) * downsampled_len / 2) * sparse_attn_mask.shape[0] * sparse_attn_mask.shape[1]
+                if self.profile_file is not None:
+                    with open(self.profile_file, "a") as f:
+                        f.write(f"{hidden_states.shape[1]}: {sparse_attn_mask.sum().item() / total_causal_size}\n")
+
+            else:
+                raise NotImplementedError("The sparsity method is not implemented")
+        
             attn_output = self.attn_func(
                 query_states,
                 key_states,
@@ -489,6 +490,9 @@ class SeerAttnLlamaPreTrainedModel(PreTrainedModel):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
+        
+        elif isinstance(module, MultiHeadLinear):
+            module.weight.data.normal_(mean=0.0, std=std)
 
 
 
@@ -935,7 +939,7 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        num_logits_to_keep: int = 1,
+        logits_to_keep: Union[int, torch.Tensor] = 1,
         **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPastAndSeer]:
         r"""
@@ -945,10 +949,13 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
                 config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
                 (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
 
-            num_logits_to_keep (`int`, *optional*):
-                Calculate logits for the last `num_logits_to_keep` tokens. If `0`, calculate logits for all
+            logits_to_keep (`int` or `torch.Tensor`, *optional*):
+                If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
                 `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
                 token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
+                If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
+                This is useful when using packed tensor format (single dimension for batch and sequence length).
+                hacky change: default to 1
 
         Returns:
 
@@ -994,7 +1001,8 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         )
         hidden_states = outputs[0]
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        logits = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None
         if labels is not None:
@@ -1071,3 +1079,27 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         )
         return model_inputs
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, load_gate=True, *model_args, **kwargs):
+        # Call the original method first
+        if load_gate:
+            config = SeerAttnLlamaConfig.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+            base_model = config.base_model
+            
+            model = super().from_pretrained(base_model, *model_args, **kwargs)
+            if os.path.exists(pretrained_model_name_or_path):
+                gate_weights = torch.load(os.path.join(pretrained_model_name_or_path, "attn_gate_weights.pth"))
+            else:
+                try: 
+                    gate_weights = torch.load(
+                        hf_hub_download(repo_id=pretrained_model_name_or_path, filename="attn_gate_weights.pth")
+                    )
+                except:
+                    raise ValueError("Could not load the attention gate weights.")
+                    
+            model.load_state_dict(gate_weights, strict=False)
+            print("Attention gate weights loaded successfully.")
+        else:
+            model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+    
+        return model

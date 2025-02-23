@@ -2,7 +2,7 @@ import os
 from datasets import load_dataset
 import torch
 import json
-from transformers import AutoTokenizer, LlamaTokenizer, LlamaForCausalLM, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoConfig
 from tqdm import tqdm
 import numpy as np
 import random
@@ -10,7 +10,7 @@ import argparse
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import importlib
-from seer_attn import SeerAttnLlamaForCausalLM
+from seer_attn import SeerAttnLlamaForCausalLM, SeerAttnQwen2ForCausalLM
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
@@ -87,14 +87,26 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)
 
 def load_model_and_tokenizer(path, device, threshold):
-    tokenizer = AutoTokenizer.from_pretrained(path, padding_side="left")
-    model = SeerAttnLlamaForCausalLM.from_pretrained(
-        path, 
-        torch_dtype=torch.bfloat16,
-        seerattn_sparsity_method='threshold',
-        seerattn_last_block_dense=True,
-        seerattn_threshold=threshold
-    ).to(device)
+    config = AutoConfig.from_pretrained(path)
+    tokenizer = AutoTokenizer.from_pretrained(config.base_model, padding_side="left")
+    if "llama" in path.lower():
+        model = SeerAttnLlamaForCausalLM.from_pretrained(
+            path, 
+            torch_dtype=torch.bfloat16,
+            seerattn_sparsity_method='threshold',
+            seerattn_last_block_dense=True,
+            seerattn_threshold=threshold
+        ).to(device)
+    elif "qwen" in path.lower():
+        model = SeerAttnQwen2ForCausalLM.from_pretrained(
+            path, 
+            torch_dtype=torch.bfloat16,
+            seerattn_sparsity_method='threshold',
+            seerattn_last_block_dense=True,
+            seerattn_threshold=threshold
+        ).to(device)
+    else:
+        raise ValueError("Model not supported")
 
     model = model.eval()
     return model, tokenizer

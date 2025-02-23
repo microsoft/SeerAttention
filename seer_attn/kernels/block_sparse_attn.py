@@ -241,23 +241,25 @@ def _forward(
 
     H = q.shape[1]
 
-    _fwd_kernel[grid](
-        q, k, v, sm_scale,
-        block_sparse_mask,
-        o,
-        *q.stride(), 
-        *k.stride(), 
-        *v.stride(), 
-        *block_sparse_mask.stride(), 
-        *o.stride(),
-        H, N_CTX,
-        PAST_LEN,
-        BLOCK_M,
-        BLOCK_N,
-        BLOCK_DMODEL,
-        num_warps=num_warps,
-        num_stages=num_stages,
-    )
+
+    with torch.cuda.device(q.device.index): 
+        _fwd_kernel[grid](
+            q, k, v, sm_scale,
+            block_sparse_mask,
+            o,
+            *q.stride(), 
+            *k.stride(), 
+            *v.stride(), 
+            *block_sparse_mask.stride(), 
+            *o.stride(),
+            H, N_CTX,
+            PAST_LEN,
+            BLOCK_M,
+            BLOCK_N,
+            BLOCK_DMODEL,
+            num_warps=num_warps,
+            num_stages=num_stages,
+        )
 
     return o
 

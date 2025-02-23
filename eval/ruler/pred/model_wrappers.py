@@ -89,10 +89,11 @@ class SeerAttnModel:
     def __init__(self, name_or_path: str, threshold, **generation_kwargs) -> None:
         from seer_attn import SeerAttnLlamaForCausalLM 
 
-        from transformers import AutoTokenizer, pipeline
+        from transformers import AutoTokenizer, pipeline, AutoConfig
 
+        config = AutoConfig.from_pretrained(name_or_path)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            name_or_path, 
+            config.base_model, 
             trust_remote_code=True,
             padding_side="left",
         )

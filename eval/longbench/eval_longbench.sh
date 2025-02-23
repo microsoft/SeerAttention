@@ -1,9 +1,17 @@
-model_path="../../models/seer_attn_llama_3.1/Qavg_Kmaxminavg_lr1e-3_maxlen65536_warmup20_bs16_steps500_gatelossscale10.0"
+model_path="SeerAttention/SeerAttention-Llama-3.1-8B-AttnGates"
 # change model to the path of your model if needed
 
-export PROFILE_FILE="./results/Qavg_Kmaxminavg_2e-3.txt" # Comment this line to disable profiling
+export PROFILE_FILE="./results/llama/8B_2e-3.txt" # Comment this line to disable profiling
 python run.py \
-    --output_dir ./results/ \
+    --output_dir ./results/llama \
+    --model_checkpoint $model_path \
+    --threshold 2e-3 
+
+
+model_path="SeerAttention/SeerAttention-Qwen2.5-7B-AttnGates"
+export PROFILE_FILE="./results/qwen/7B_2e-3.txt" 
+python run.py \
+    --output_dir ./results/qwen \
     --model_checkpoint $model_path \
     --threshold 2e-3 
 
