@@ -29,7 +29,7 @@ import random
 @dataclass
 class ModelArguments:
     base_model: str = field(default="meta-llama/Meta-Llama-3.1-8B")
-    model_name_or_path: Optional[str] = field(default="meta-llama/Meta-Llama-3.1-8B", metadata={"help": "The local model path."})
+    model_name_or_path: Optional[str] = field(default=None, metadata={"help": "The local model path if any."})
     seerattn_gate_type: Optional[str] = field(
         default="Qavg_Kmaxmin",
         metadata={"help": "AttnGate pooling type. Currently support combination of max min avg pooling for both q and k."},
