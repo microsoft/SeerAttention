@@ -1005,7 +1005,7 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         logits = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None
-        if labels is not None:
+        if not self.training and labels is not None: ## current self-distillation training does not require loss computation, re-enable if needed
             loss_fct = torch.nn.CrossEntropyLoss(reduction='sum')
             valid_seq_len = input_ids.shape[-1] - 1
             valid_seq_len_slide_win = torch.sum(labels[:, 1:] >= 0).item()

@@ -1022,7 +1022,7 @@ class SeerAttnQwen2ForCausalLM(SeerAttnQwen2PreTrainedModel, GenerationMixin):
         logits = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None
-        if labels is not None:
+        if not self.training and labels is not None: ## current self-distillation training does not require loss computation, re-enable if needed
             # loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
             loss_fct = torch.nn.CrossEntropyLoss(reduction='sum')
             valid_seq_len = input_ids.shape[-1] - 1
