@@ -156,7 +156,7 @@ def main(args):
     
     # Model loading with config parameters
     if args.use_seer_attn:
-        if "llama" in model_path.lower():
+        if "llama" in base_dir.lower():
             model = SeerAttnLlamaForCausalLM.from_pretrained(
                 model_path,
                 torch_dtype=torch.bfloat16,
@@ -167,7 +167,7 @@ def main(args):
                 seerattn_gate_type=args.gate_type,
                 seerattn_last_block_dense=False,
             )
-        elif "qwen" in model_path.lower():
+        elif "qwen" in base_dir.lower():
             model = SeerAttnQwen2ForCausalLM.from_pretrained(
                 model_path,
                 torch_dtype=torch.bfloat16,

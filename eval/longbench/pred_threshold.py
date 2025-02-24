@@ -89,7 +89,7 @@ def seed_everything(seed):
 def load_model_and_tokenizer(path, device, threshold):
     config = AutoConfig.from_pretrained(path)
     tokenizer = AutoTokenizer.from_pretrained(config.base_model, padding_side="left")
-    if "llama" in path.lower():
+    if "llama" in config.base_model.lower():
         model = SeerAttnLlamaForCausalLM.from_pretrained(
             path, 
             torch_dtype=torch.bfloat16,
@@ -97,7 +97,7 @@ def load_model_and_tokenizer(path, device, threshold):
             seerattn_last_block_dense=True,
             seerattn_threshold=threshold
         ).to(device)
-    elif "qwen" in path.lower():
+    elif "qwen" in config.base_model.lower():
         model = SeerAttnQwen2ForCausalLM.from_pretrained(
             path, 
             torch_dtype=torch.bfloat16,
