@@ -828,13 +828,14 @@ class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
             attention_mask.bitwise_not_()
             return attention_mask
 
+        downsample_len = math.ceil(input_tensor.shape[1] / self.config.seerattn_gate_block_size)
         if attention_mask is not None:
             gate_mask = torch.nn.functional.max_pool2d(attention_mask, (self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), stride=(self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), ceil_mode=True)
+            if gate_mask.shape[-1] > downsample_len:
+                gate_mask = gate_mask[:, :, :downsample_len, :downsample_len]
         else:
-            downsample_len = math.ceil(input_tensor.shape[1] / self.config.seerattn_gate_block_size)
             gate_mask = gen_attn_mask(downsample_len).to(device=input_tensor.device)
         return gate_mask
-
 
     @staticmethod
     def _prepare_4d_causal_attention_mask_with_cache_position(
