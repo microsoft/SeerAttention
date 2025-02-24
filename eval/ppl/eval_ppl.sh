@@ -9,7 +9,7 @@ num_total_gpus=8
 dataset="emozilla/pg19-test"
 for nz in "${nz_ratios[@]}"; do
     echo "Running dataset $dataset with nz_ratio $nz on GPU $gpu"
-    CUDA_VISIBLE_DEVICES=$gpu python eval_ppl_seperate.py \
+    CUDA_VISIBLE_DEVICES=$gpu python eval_ppl.py \
         -m $model_path \
         --split test \
         --feature text \
