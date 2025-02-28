@@ -48,11 +48,17 @@ class HFTokenizer:
     """
 
     def __init__(self, model_path) -> None:
-        from transformers import AutoTokenizer
-
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_path, trust_remote_code=True
-        )
+        from transformers import AutoTokenizer, AutoConfig
+        config = AutoConfig.from_pretrained(model_path)
+        if "seer" in model_path.lower():
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                config.base_model, trust_remote_code=True,
+                use_fast=False, 
+            )
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_path, trust_remote_code=True
+            )
 
     def text_to_tokens(self, text: str) -> List[str]:
         tokens = self.tokenizer.tokenize(text)
