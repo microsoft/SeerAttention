@@ -10,6 +10,7 @@ Official implementation of **SeerAttention** - a novel trainable sparse attentio
 
 
 ## News
+- **2025/3/5**: Release AttnGates of DeepSeek-R1-Distill-Qwen on HF. Release sparse flash-attn kernel with bwd for fine-tuning.
 - **2025/2/23**: Support Qwen! Change the distillation into model adapter so that only AttnGates are saved.
 - **2025/2/18**: Deepseek's Native Sparse Attention ([NSA](https://arxiv.org/abs/2502.11089)) and Kimi's Mixture of Block Attention ([MoBA](https://github.com/MoonshotAI/MoBA)) all aquire similar trainable sparse attention concepts as us for pretrain models. Great works!
 
@@ -33,6 +34,9 @@ The current codebase is improved by only saving the distilled AttnGates' weights
 | Qwen2.5-7B-Instruct      | [SeerAttention/SeerAttention-Qwen2.5-7B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-Qwen2.5-7B-AttnGates)         | 77 MB        |
 | Qwen2.5-14B-Instruct     | [SeerAttention/SeerAttention-Qwen2.5-14B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-Qwen2.5-14B-AttnGates)        | 189 MB       |
 | Qwen2.5-32B-Instruct     | [SeerAttention/SeerAttention-Qwen2.5-32B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-Qwen2.5-32B-AttnGates)        | 252 MB       |
+| deepseek-ai/DeepSeek-R1-Distill-Qwen-14B     | [SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-14B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-14B-AttnGates)        | 189 MB       |
+| deepseek-ai/DeepSeek-R1-Distill-Qwen-32B     | [SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-32B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-32B-AttnGates)        | 252 MB       |
+
 
 ## Quick Start
 
@@ -84,15 +88,24 @@ model = model.cuda()
 # Ready to inference
 ```
 
-### 3. Training Attention Gates with Self-distillation
-Only AttnGates are trained to mimic the block-level attention score. In other words, the original model's weights are fronzen. 
+### 3. Training your AttnGates
+In the current self-distillation training setup, you can train the AttnGates for your own model. Here we give an example script for Llama-3.1-8B-Instruct. After the distillation process, the AttnGates' weights will be saved.
 
 ```bash
 ## scirpts to reproduce llama-3.1-8b
 bash run_distillation.sh
 ```
 
-The core idea of self-distillation training is to use the 2d-maxpooled attention map from original model to train an AttnGate. We provide an efficient kernel to directly output this ground truth. 
+
+## Kernel Library in SeerAttention
+
+
+### 1. Inference Kernel 
+We have a triton version and a CUDA version of 2D block-sparse flash-attn kernel for current SeerAttention inference. By default, the triton kernel is used as backend. The CUDA kernel is still being improved. See `seer_attn/block_sparse_attention` for more details.
+
+
+### 2. Kernel to generate 2D maxpooled ground truth for self-distillation training
+If first compute the intermediate attn-map (softmax(Q*K)) and then perform 2D maxpooled to generate the ground truth, it will cost huge GPU memory due to the quadratic size of the attn-map. Thus, we implement a kernel to directly generate the 2D maxpooled attn-map for efficient self-distillation training process. 
 
 
 ```python
@@ -114,6 +127,47 @@ attn_output, mask_ground_truth = attn_with_pooling(
 loss = self.loss_func(predict_mask, mask_ground_truth)   
 ```
 
+### 3. Fine-tuning kernels (beta)
+We implement two different kernels with backward for sparse-atttention-aware fine-tuning.
+
+- Compress the sequence dimention for both Q, K and V. Similar to current SeerAttention Prefill.
+
+```python
+from seer_attn import block_2d_sparse_attn_varlen_func
+
+k = repeat_kv_varlen(k, self.num_key_value_groups)
+v = repeat_kv_varlen(v, self.num_key_value_groups)
+attn_output = block_2D_sparse_attn_varlen_func(
+    q, # [t, num_heads, head_dim]
+    k, # [t, num_heads, head_dim]
+    v, # [t, num_heads, head_dim]
+    cu_seqlens, 
+    cu_seqlens,
+    max_seqlen,
+    1.0 / math.sqrt(self.head_dim),
+    block_mask, # [bsz, num_heads, ceil(t/block_size), ceil(t/block_size)]
+    block_size, # block_size of sparsity           
+)
+```
+- Compress only the sequence dimention of KV while enforcing all the heads within a GQA group share the same sparse mask. This is similar to the find-grained sparse branch of deepseek NSA. 
+
+```python
+from seer_attn import block_1d_gqa_sparse_attn_varlen_func
+
+attn_output = block_1d_gqa_sparse_attn_varlen_func(
+    q,  # [t, num_q_heads, head_dim]
+    k,  # [t, num_kv_heads, head_dim]
+    v,  # [t, num_kv_heads, head_dim]
+    cu_seqlens, 
+    cu_seqlens,
+    max_seqlen,
+    1.0 / math.sqrt(self.head_dim),
+    block_mask, # [bsz, num_kv_heads, t, ceil(t/block_size)]
+    block_size, # block_size of sparsity             
+)
+
+```
+The code for fine-tuning with SeerAttention will be release soon.  
 
 
 ## Evaluation
