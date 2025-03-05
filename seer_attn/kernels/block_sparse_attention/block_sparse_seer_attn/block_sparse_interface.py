@@ -1,6 +1,6 @@
 import torch
 
-from my_block_sparse_attn_cutclass import flash_attention_block_v2_cutlass
+from block_sparse_seer_attn_cutclass import flash_attention_block_v2_cutlass
 
 def convert_blockmask_row_reverse(blockmask, causal=True, kM=64, kN=64):
     M, N = blockmask.shape[-2], blockmask.shape[-1]

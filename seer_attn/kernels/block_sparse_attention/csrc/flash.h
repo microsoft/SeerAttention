@@ -2,7 +2,6 @@
 
 #include <cstdint>
 
-// TODO: 特种约束字段, e.g. __restrict__ 的效果
 struct Qkv_params {
     using index_t = uint32_t;
     // The QKV matrices.

@@ -3,7 +3,9 @@
 Custom block-sparse FlashAttention implementation.
 
 ## Usage
-```make build```
+```bash
+make build
+```
 
 ```
 from block_sparse_seer_attn import block_sparse_attention
