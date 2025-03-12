@@ -12,4 +12,4 @@ Change limit=-1 in the scipt to run all the tests.
 | threshold| 0.005  | 0.001 | Dense |
 |----------|--------|-------|-------|
 | Acc      | 73.33  | 73.33 | 70    |
-| Sparsity | 86%    | 61.68%| 0     |
+| Decode Sparsity | 86%    | 61.68%| 0     |
