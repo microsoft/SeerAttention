@@ -10,6 +10,7 @@ Official implementation of **SeerAttention** - a novel trainable sparse attentio
 
 
 ## News
+- **2025/3/12**: Add a small demo on supporting decode sparsity. SeerAttention achieves 60% average decode sparsity without acc loss on AIME! See `eval/reasoning_tasks`. 
 - **2025/3/5**: Release AttnGates of DeepSeek-R1-Distill-Qwen on HF. Release sparse flash-attn kernel with bwd for fine-tuning.
 - **2025/2/23**: Support Qwen! Change the distillation into model adapter so that only AttnGates are saved.
 - **2025/2/18**: Deepseek's Native Sparse Attention ([NSA](https://arxiv.org/abs/2502.11089)) and Kimi's Mixture of Block Attention ([MoBA](https://github.com/MoonshotAI/MoBA)) all aquire similar trainable sparse attention concepts as us for pretrain models. Great works!
