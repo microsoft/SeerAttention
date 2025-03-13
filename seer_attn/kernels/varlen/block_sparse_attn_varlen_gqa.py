@@ -28,6 +28,21 @@ def get_sparse_attn_mask_from_threshold(x, threshold, block_mask=None, use_dense
 
     return  dense_mask
 
+def get_sparse_attn_mask_from_threshold_grouped(soft_masks, threshold, max_seqlen, block_size):
+    bsz = len(soft_masks)
+    n_heads = soft_masks[0].size(0)
+    num_blocks = math.ceil(max_seqlen / block_size)
+
+    dense_mask = torch.zeros(bsz, n_heads, max_seqlen, num_blocks, dtype=torch.bool, device=soft_masks[0].device)
+
+    for i, mask in enumerate(soft_masks):
+        mask_m, mask_n = mask.size(-2), mask.size(-1)
+        dense_mask[i, :, 0:mask_m, 0:mask_n] = mask > threshold
+
+    return  dense_mask
+
+
+
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=num_warps)
