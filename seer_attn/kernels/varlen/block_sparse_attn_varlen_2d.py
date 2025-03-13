@@ -17,19 +17,6 @@ def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
 
 
-def get_sparse_attn_mask_from_topk(x, topk, device, use_dense_for_last_block=False):
-    x = x.to(device)
-    _, num_head, downsample_len, _ = x.shape
-    # N_CTX = downsample_len * BLOCK
-    sparse_index = torch.topk(x, topk, dim=-1).indices
-    dense_mask = torch.full([1, num_head, downsample_len, downsample_len], False, dtype=torch.bool, device=device)
-    dense_mask.scatter_(-1, sparse_index, True)
-    if use_dense_for_last_block:
-        dense_mask[:,:,-1:,:] = True 
-    dense_mask.tril_()
-    return  dense_mask
-
-
 def get_sparse_attn_mask_from_threshold(x, threshold, block_mask=None, use_dense_for_last_block=False):
     dense_mask = x > threshold 
     

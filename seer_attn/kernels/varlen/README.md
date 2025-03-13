@@ -12,7 +12,7 @@ v = repeat_kv_varlen(v, self.num_key_value_groups)
 
 # q, k, v shapes: [t, num_heads, head_dim]
 # block_mask shapes: [bsz, num_heads, t, ceil(t/B)]
-attn_output = block_sparse_attn_varlen_func(
+attn_output = block_1d_gqa_sparse_attn_varlen_sim_func(
     q, 
     k,
     v,
@@ -29,7 +29,7 @@ The current default config is tuned for MI300x. If you run on Nvidia GPUs, you m
 
 
 
-## **block_sparse_attn_dense_mask_varlen_gqa.py** 
+## **block_sparse_attn_varlen_gqa.py** 
 
 This kernel is bascially has the same functionaly as the previous one except that it performs real sparse computation. However, it can waste computation when GQA group size < 16.  
 
@@ -39,7 +39,7 @@ Use case:
 # q shapes: [t, num_q_heads, head_dim]
 # k, v shapes: [t, num_kv_heads, head_dim]
 # block_mask shapes: [bsz, num_kv_heads, t, ceil(t/B)]
-attn_output = block_sparse_attn_varlen_func(
+attn_output = block_1d_gqa_sparse_attn_varlen_func(
     q, 
     k,
     v,
@@ -66,7 +66,7 @@ v = repeat_kv_varlen(v, self.num_key_value_groups)
 
 # q, k, v shapes: [t, num_heads, head_dim]
 # block_mask shapes: [bsz, num_heads, ceil(t/B), ceil(t/B)]
-attn_output = block_sparse_attn_varlen_func(
+attn_output = block_2d_sparse_attn_varlen_func(
     q, 
     k,
     v,
