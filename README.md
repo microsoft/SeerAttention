@@ -129,12 +129,11 @@ loss = self.loss_func(predict_mask, mask_ground_truth)
 ```
 
 ### 3. Fine-tuning kernels (beta)
-We implement two different kernels with backward for sparse-atttention-aware fine-tuning.
+We release multiple kernels for sparse-atttention-aware fine-tuning. See `seen_attn/kernel/varlen` for details.
 
 - Compress the sequence dimention for both Q, K and V. Similar to current SeerAttention Prefill.
 
 ```python
-from seer_attn import block_2d_sparse_attn_varlen_func
 
 k = repeat_kv_varlen(k, self.num_key_value_groups)
 v = repeat_kv_varlen(v, self.num_key_value_groups)
@@ -153,7 +152,6 @@ attn_output = block_2D_sparse_attn_varlen_func(
 - Compress only the sequence dimention of KV while enforcing all the heads within a GQA group share the same sparse mask. This is similar to the find-grained sparse branch of deepseek NSA. 
 
 ```python
-from seer_attn import block_1d_gqa_sparse_attn_varlen_func
 
 attn_output = block_1d_gqa_sparse_attn_varlen_func(
     q,  # [t, num_q_heads, head_dim]
