@@ -125,12 +125,9 @@ class AttnGate(nn.Module):
                 k = self.mask_linear_k(k)
 
 
-        if position_embeddings is not None and decode_update_flag == True:
+        if position_embeddings:
             cos, sin = position_embeddings
-            if do_q_pooling:
-                q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
-            else:
-                k = apply_rotary_pos_emb_single(k, cos, sin, unsqueeze_dim=1)
+            k = apply_rotary_pos_emb_single(k, cos, sin, unsqueeze_dim=1)
 
         # When prefilling, attngate only need to update the k pooling cache
         k = pooling_cache.update_k_pooling_cache(k, layer_idx, do_q_pooling, prefill_update_flag, decode_update_flag)
