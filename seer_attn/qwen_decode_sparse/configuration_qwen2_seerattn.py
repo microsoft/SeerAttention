@@ -157,6 +157,8 @@ class SeerAttnQwen2Config(PretrainedConfig):
         max_position_embeddings=32768,
         initializer_range=0.02,
         rms_norm_eps=1e-6,
+        fused_norm=False,
+        use_flash_rope=False,
         use_cache=True,
         tie_word_embeddings=False,
         rope_theta=10000.0,
@@ -168,7 +170,9 @@ class SeerAttnQwen2Config(PretrainedConfig):
         seerattn_sparsity_method='threshold', ## or nz_ratio
         seerattn_threshold=0.0,
         seerattn_nz_ratio=1.0,
-        seerattn_gate_type='Qavg_Kmaxminavg',
+        seerattn_k_seq_pooling_type='Kmaxminavg',
+        seerattn_q_head_pooling_type='Qproj', ## or Qavgproj
+        seerattn_training_threshold=0.0,
         seerattn_gate_block_size=64, 
         seerattn_gate_hidden_size=128,
         seerattn_last_block_dense=True,
@@ -198,20 +202,31 @@ class SeerAttnQwen2Config(PretrainedConfig):
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
         self.attention_dropout = attention_dropout
+        self.fused_norm = fused_norm
+        self.use_flash_rope = use_flash_rope
         
         
         self.seerattn_sparsity_method = seerattn_sparsity_method
         self.seerattn_threshold = seerattn_threshold
         self.seerattn_nz_ratio = seerattn_nz_ratio
-        self.seerattn_gate_type = seerattn_gate_type
-        self.seerattn_gate_block_size = seerattn_gate_block_size
-        self.seerattn_gate_hidden_size = seerattn_gate_hidden_size
+        self.seerattn_k_seq_pooling_type = seerattn_k_seq_pooling_type  # Kmaxminavg
+
+        self.seerattn_q_head_pooling_type = seerattn_q_head_pooling_type
+        assert self.seerattn_q_head_pooling_type in ['Qproj', 'Qavgproj', 'Qavg']
+        
+        self.seerattn_training_threshold = seerattn_training_threshold
+        self.seerattn_gate_hidden_size = seerattn_gate_hidden_size    
+        self.seerattn_gate_block_size = seerattn_gate_block_size      
+        
         self.seerattn_last_block_dense = seerattn_last_block_dense
         self.use_prefill_seerattn = use_prefill_seerattn
         self.use_decode_seerattn = use_decode_seerattn
         
         assert self.seerattn_sparsity_method in ['threshold', 'nz_ratio']
-        
+        assert self.seerattn_gate_hidden_size in [64, 128, 256]
+        assert self.seerattn_gate_block_size in [16, 32, 64]
+
+
         # Validate the correctness of rotary position embeddings parameters
         # BC: if there is a 'type' field, move it to 'rope_type'.
         if self.rope_scaling is not None and "type" in self.rope_scaling:

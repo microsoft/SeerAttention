@@ -1,12 +1,12 @@
-# Modified from https://github.com/GAIR-NLP/LIMO/blob/main/eval/eval.py by Shuming Guo
-
 import json
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import torch
+# from vllm import LLM, SamplingParams
 import re
 import importlib.util
 import os
 import argparse
+# import vllm.envs as envs
 import random
 import time
 from datetime import datetime
@@ -18,34 +18,20 @@ from Utils.math_normalization import *
 from Utils.grader import *
 import pickle
 from math import comb
-from seer_attn.qwen_decode_sparse.configuration_qwen2_seerattn import SeerAttnQwen2Config
-from seer_attn.qwen_decode_sparse.modeling_qwen2_seerattn_inference import SeerAttnQwen2ForCausalLMInf
+from seer_attn import SeerDecodingQwen2ForCausalLM
+from generation_utils import batch_exist_generate
 
-def calculate_average_percentage(file_path):
+def calculate_average_percentage(sparsitys):
     weighted_sum = 0
     total_weight = 0
-    total_percentage = 0
-    count = 0
 
-    with open(file_path, "r") as f:
-        for line in f:
-            parts = line.strip().split(' ')
-            percentage = float(parts[0].rstrip('%'))
-            weight = int(parts[1])
-            # percentage = float(line.strip().strip('%'))
-            total_percentage += percentage
-            count += 1
-            weighted_sum += percentage * weight
-            total_weight += weight
+
+    for sparsity, length in sparsitys:
+        weighted_sum += sparsity * length
+        total_weight += length
             
-
-    if count == 0:
-        return 0.0
-
-    average_percentage = total_percentage / count
-    average_percentage_weighted = weighted_sum / total_weight
-    return average_percentage, average_percentage_weighted
-
+    # average_percentage_weighted = weighted_sum / total_weight
+    return weighted_sum, total_weight
 
 def parse_list(arg):
     return arg.split(',')
@@ -68,7 +54,7 @@ def parse_args():
     parser.add_argument('--start_idx', type=int, default=0, help="data[start:end]")
     parser.add_argument('--end_idx', type=int, default=-1, help="data[start:end], if -1, data[start:]")
     parser.add_argument("--temperature", default=0, type=float)
-    parser.add_argument("--max_tokens", default=2048, type=int)
+    parser.add_argument("--max_tokens", default=32768, type=int)
     parser.add_argument("--prompt_type", default="qwen-instruct", type=str)
     parser.add_argument("--prompt_file_path", default="./prompts", type=str)
     parser.add_argument("--surround_with_messages", action="store_true")
@@ -78,12 +64,14 @@ def parse_args():
     parser.add_argument("--top_p", default=1, type=float)
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--dtype", default='auto', type=str)
-    parser.add_argument("--completions_save_dir", default='./completions', type=str)
     parser.add_argument("--threshold", default=0, type=float)
+    parser.add_argument("--rank", default=0, type=int)
+    parser.add_argument("--attention_implementation", default="ours", choices=["ours", "fa2", "sdpa"], type=str)
+    parser.add_argument("--use_batch_exist", action="store_true")
+    parser.add_argument("--use_fused_kernel", action="store_true")
     args = parser.parse_args()
     
-    args.top_p = 1 if args.temperature == 0 else args.top_p 
-    print(f"current stop list: {args.stop}")
+    args.top_p = 1 if args.temperature == 0 else args.top_p # top_p must be 1 when using greedy 
     return args
 
 def get_conversation_prompt_by_messages(tokenizer, messages):
@@ -98,7 +86,6 @@ def get_three_prompt(prompt_type, data_name):
     file_path = os.path.join(".", "prompts", prompt_type, f"{data_name}.py")
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
-
     spec = importlib.util.spec_from_file_location("dynamic_module", file_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -128,7 +115,6 @@ def infer(args):
     prompt_lens = []
 
     n_sampling = args.n_sampling
-
     
     examples = load_data(args.data_name, args.split, args.data_dir)
     if args.end_idx == -1:
@@ -140,29 +126,22 @@ def infer(args):
         examples = examples[:limit]
     
 
-    if args.threshold == 0:
-        model = SeerAttnQwen2ForCausalLMInf.from_pretrained(
-            model_name_or_path,
-            torch_dtype=torch.bfloat16,
-            use_prefill_seerattn=False,
-            use_decode_seerattn=False,
-            device_map='auto',
+    if args.attention_implementation == "ours":
+        config = AutoConfig.from_pretrained(model_name_or_path)
+        base_model = config.base_model
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model,
+            trust_remote_code=True,
+            padding_side="left",
+            use_fast=True,
         )
     else:
-        model = SeerAttnQwen2ForCausalLMInf.from_pretrained(
-            model_name_or_path,
-            torch_dtype=torch.bfloat16,
-            use_prefill_seerattn=False,
-            use_decode_seerattn=True,
-            seerattn_sparsity_method = "threshold",
-            seerattn_threshold = args.threshold,
-            device_map='auto',
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name_or_path, 
+            trust_remote_code=True, 
+            padding_side="left",
+            use_fast=True,
         )
-    model.eval()
-
-
-    config = SeerAttnQwen2Config.from_pretrained(model_name_or_path)
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model, trust_remote_code=True)
     prompt_batch = []
     for example in tqdm(examples, total=len(examples)):
         # parse question and answer
@@ -174,100 +153,175 @@ def infer(args):
         else:
             cur_prompt = question_format.format(question=question)
         if args.surround_with_messages:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": cur_prompt}
-            ]
+            if args.data_name in ["aime", "math"]:
+                # messages = [
+                #     {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
+                # ]
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": cur_prompt}
+                ]
+            else:
+                # for gpqa
+                messages = [
+                    {"role": "user", "content": cur_prompt}
+                ]
             cur_prompt = get_conversation_prompt_by_messages(tokenizer=tokenizer, messages=messages)
         prompt_batch.append(cur_prompt)
-    print(prompt_batch[0])
 
 
-    progress = tqdm(total=len(prompt_batch), desc="Generating Completions")
-    times = []
+    if args.attention_implementation == "ours":
+        if args.use_fused_kernel:
+            model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
+                                                    torch_dtype=torch.bfloat16,
+                                                    device_map="auto",
+                                                    use_cache=True,
+                                                    fused_norm=True,
+                                                    seerattn_threshold=args.threshold,
+                                                    use_flash_rope=True,
+            )
+        else:
+            model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
+                                                    torch_dtype=torch.bfloat16,
+                                                    device_map="auto",
+                                                    seerattn_threshold=args.threshold,
+                                                    use_cache=True,)
+    elif args.attention_implementation == "fa2":
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
+                                                    torch_dtype=torch.bfloat16,
+                                                    device_map="auto",
+                                                    use_cache=True,
+                                                    attn_implementation="flash_attention_2",
+                                                    trust_remote_code=True)
+    elif args.attention_implementation == "sdpa":
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
+                                                    torch_dtype=torch.bfloat16,
+                                                    device_map="auto",
+                                                    use_cache=True,
+                                                    trust_remote_code=True)
+    else:
+        raise ValueError(f"Unknown attention implementation: {args.attention_implementation}")
+    
+    model.eval()
 
-    file_outputs = []
+    generate_lens = []
     correct_cnt = 0
-    completions_save_file = f'{args.output_dir}/{args.data_name}_with_{args.threshold}_completion.txt'
+    output_subdir = f"{args.data_name}_bs_{args.batch_size}_attn_{args.attention_implementation}_T{args.threshold}_batch_exist_{args.use_batch_exist}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    checkpoint_filename = f"ckpt.jsonl"
+    args.output_dir = os.path.join(args.output_dir, output_subdir) 
+    os.makedirs(args.output_dir, exist_ok=True)
+    output_path_txt = os.path.join(args.output_dir, "summary.txt")
+    output_completions_path = os.path.join(args.output_dir, "completions.json")
+    checkpoint_filename_json = os.path.join(args.output_dir, checkpoint_filename)
+    completions = []
     batch_size = args.batch_size
+
+
+    begin = time.time()
+
     for i in range(0, len(prompt_batch), batch_size):
         # Tokenize the prompt batch
+        print("start batch: ", i, flush=True)
         batch_prompts = prompt_batch[i:i+batch_size]
-        tokenized_prompts = tokenizer(batch_prompts, padding="longest", return_tensors="pt", add_special_tokens=True)
+        tokenized_prompts = tokenizer(batch_prompts, padding="longest", return_tensors="pt", add_special_tokens=True).to('cuda')
         batch_input_ids = tokenized_prompts.input_ids
         attention_mask = tokenized_prompts.attention_mask
-        batch_input_ids = batch_input_ids.cuda()
-        attention_mask = attention_mask.cuda()
-        
-        
-        torch.cuda.synchronize()
-        time1 = time.time()
-        outputs = model.generate(
-            input_ids=batch_input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=args.max_tokens,
-            num_return_sequences=1,
-        )
-        torch.cuda.synchronize()
-        time2 = time.time()
-        times.append(time2-time1)
-        model.refresh_PoolingCache()
 
+        print("start batch: ", i, flush=True)
+
+        if args.use_batch_exist:
+            if args.attention_implementation == "ours":
+                outputs = model.batch_exist_generate(
+                    input_ids=batch_input_ids,
+                    attention_mask=attention_mask,
+                    max_length = args.max_tokens,
+                    do_sample=True,
+                )
+            else:
+                outpus = batch_exist_generate(
+                    model,
+                    input_ids=batch_input_ids,
+                    attention_mask=attention_mask,
+                    max_length = args.max_tokens,
+                    do_sample=True,
+                )
+
+        else:
+            outputs = model.generate(
+                input_ids=batch_input_ids,
+                attention_mask=attention_mask,
+                max_length = args.max_tokens,
+                do_sample=True,
+                num_return_sequences=1
+            )
+
+        
+        print("get output in batch: ", i, flush=True)
+        
         for j in range(len(outputs)):
-            generate_lens.append(len(outputs[j]) - len(batch_input_ids[j]))
-            prompt_lens.append(len(batch_input_ids[j]))
+            output_seq = outputs[j]
+            num_tokens = (output_seq != tokenizer.pad_token_id).sum().item()
+            generate_lens.append(num_tokens - len(batch_input_ids[j]))
 
-        completions = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        batch_results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        completions.extend(batch_results)
+        print("finish batch: ", i, flush=True)
 
-            
-        
-        for j in range(i,min(i+batch_size,len(prompt_batch))):
-            d = examples[j]
-            gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
-            question = parse_question(d, args.data_name)
-            generated_responses = [completions[j-i]]
-            generated_answers = [extract_answer(generated_response, args.data_name) for generated_response in generated_responses]
-            is_correct_list = [check_is_correct(generated_answer, gt_ans) for generated_answer in generated_answers]
-            is_correct = any(is_correct_list)
-            if is_correct:
-                correct_cnt += 1
-        progress.update(len(batch_prompts))
+
+
+    # check all the correct
+    for i in range(len(prompt_batch)):
+        d = examples[i]
+        gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
+        generated_responses = [completions[i]]
+        generated_answers = [extract_answer(generated_response, args.data_name) for generated_response in generated_responses]
+        is_correct_list = [check_is_correct(generated_answer, gt_ans) for generated_answer in generated_answers]
+        is_correct = any(is_correct_list)
+        if is_correct:
+            correct_cnt += 1
+
+
     
     print("llm generate done")
+    if os.path.exists(checkpoint_filename_json):
+        os.remove(checkpoint_filename_json)
 
     print("generate_lens: ", generate_lens)
     
     print(f"correct cnt / total cnt: {correct_cnt}/{len(examples)}")
     print(f"Acc: {correct_cnt / len(examples):.4f}")
 
+
     # generate_len
     average_generate_len = sum(generate_lens) / len(generate_lens)
-    average_prompt_len = sum(prompt_lens) / len(prompt_lens)
     max_generate_len = max(generate_lens)
-    max_generate_len_index = generate_lens.index(max_generate_len)
-    corresponding_prompt_len = prompt_lens[max_generate_len_index]
     print(f"Max generate length: {max_generate_len}")
-    print(f"Corresponding prompt length: {corresponding_prompt_len}")
     print(f"Average generate length: {average_generate_len}")
-    print(f"Average prompt length: {average_prompt_len}")
 
-    # time
-    average_time = sum(times) / len(times)
-    average_time_per_token = sum(times) / sum(generate_lens)
-    print(f"Average time: {average_time}")
+    end = time.time()
+    total_time = end - begin
+    average_time_per_token = total_time / sum(generate_lens)
+    print(f"Total time: {total_time}s")
     print(f"Average time per token: {average_time_per_token}")
+    
+    with open(output_path_txt, "a") as f:
+        f.write(f"Acc: {correct_cnt / len(examples):.4f}\n")
+        f.write(f"Average generate length: {average_generate_len}\n")
+        f.write(f"Max generate length: {max_generate_len}\n")
+        f.write(f"Total time: {total_time/60:.2f}min\n")
+        f.write(f"Average time per token: {average_time_per_token}\n")
+        f.write("\n")
 
-    # sparsity
-    if args.threshold != 0:
-        average_percentage_replaced, average_percentage_replaced_weighted = calculate_average_percentage("./percentage_replaced_log.txt")
-        print(f"Decode Sparsity weighted: {average_percentage_replaced_weighted}")
-        with open("./percentage_replaced_log.txt", "w") as f:
-            f.truncate(0)
+    print("Results saved to ", output_path_txt)
 
 
+    # Save completions to json
+    with open(output_completions_path, "w") as f:
+        json.dump(completions, f)
     
 
 if __name__ == "__main__":
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
     args = parse_args()
     set_seed(args.seed)
     infer(args)

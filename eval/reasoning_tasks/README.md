@@ -5,11 +5,5 @@ This math evaluation framework is modified from [LIMO](https://github.com/GAIR-N
 
 ```bash
     pip install -r reqirements.txt
-    bash test_eval.sh # run one single demo on AIME
+    bash test_eval.sh ## Now support batched eval
 ```
-Change limit=-1 in the scipt to run all the tests.
-
-| threshold| 0.005  | 0.001 | Dense |
-|----------|--------|-------|-------|
-| Acc      | 73.33  | 73.33 | 70    |
-| Decode Sparsity | 86%    | 61.68%| 0     |

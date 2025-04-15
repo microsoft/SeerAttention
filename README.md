@@ -10,6 +10,7 @@ Official implementation of **SeerAttention** - a novel trainable sparse attentio
 
 
 ## News
+- **2025/4/15**: Update batched sparse decoding inference support. 
 - **2025/3/12**: Add a small demo on supporting decode sparsity. SeerAttention achieves 60% average decode sparsity without acc loss on AIME! See `eval/reasoning_tasks`. 
 - **2025/3/5**: Release AttnGates of DeepSeek-R1-Distill-Qwen on HF. Release sparse flash-attn kernel with bwd for fine-tuning.
 - **2025/2/23**: Support Qwen! Change the distillation into model adapter so that only AttnGates are saved.
@@ -37,6 +38,9 @@ The current codebase is improved by only saving the distilled AttnGates' weights
 | Qwen2.5-32B-Instruct     | [SeerAttention/SeerAttention-Qwen2.5-32B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-Qwen2.5-32B-AttnGates)        | 252 MB       |
 | deepseek-ai/DeepSeek-R1-Distill-Qwen-14B     | [SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-14B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-14B-AttnGates)        | 189 MB       |
 | deepseek-ai/DeepSeek-R1-Distill-Qwen-32B     | [SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-32B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-32B-AttnGates)        | 252 MB       |
+| deepseek-ai/DeepSeek-R1-Distill-Qwen-14B     | [SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-14B-Decode-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-14B-Decode-AttnGates)        | 101 MB       |
+
+
 
 
 ## Quick Start
