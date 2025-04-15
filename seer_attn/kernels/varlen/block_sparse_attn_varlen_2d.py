@@ -218,7 +218,7 @@ def _fwd_kernel_varlen(
 
 
 def blocksparse_flash_attn_varlen_fwd(
-    q, k, v, # (#tokens, n_heads, head_size)
+    q, k, v, 
     cu_seqlens_k,
     cu_seqlens_q,
     max_seqlen,
@@ -226,6 +226,7 @@ def blocksparse_flash_attn_varlen_fwd(
     block_mask,
     block_size=64,
 ):
+
     # split q to blocks
     _, n_heads, head_size = q.shape
     batch = cu_seqlens_k.size(0) - 1

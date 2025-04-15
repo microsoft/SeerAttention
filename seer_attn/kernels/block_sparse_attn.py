@@ -22,30 +22,8 @@ import os
 import dataclasses
 
 
-
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
-
-
-def get_sparse_attn_mask_from_topk(x, topk, use_dense_for_last_block=False):
-    bsz, num_head, downsample_len, _ = x.shape
-    # N_CTX = downsample_len * BLOCK
-    sparse_index = torch.topk(x, topk, dim=-1).indices
-    dense_mask = torch.full([bsz, num_head, downsample_len, downsample_len], False, dtype=torch.bool, device=x.device)
-    dense_mask.scatter_(-1, sparse_index, True)
-    if use_dense_for_last_block:
-        dense_mask[:, :,-2:,:] = True 
-    dense_mask.tril_()
-    return  dense_mask
-
-
-def get_sparse_attn_mask_from_threshold(x, threshold, use_dense_for_last_block=False):
-    dense_mask = x > threshold 
-    if use_dense_for_last_block:
-        dense_mask[:, :,-2:,:] = True 
-    dense_mask.tril_()
-    return  dense_mask
-
 
 
 
@@ -269,9 +247,9 @@ def _forward(
 class _sparse_attention(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, k, v, block_sparse_dense, sm_scale):
+    def forward(ctx, q, k, v, block_mask, sm_scale):
         # shape constraints
-        return _forward(ctx, q, k, v, block_sparse_dense, sm_scale)
+        return _forward(ctx, q, k, v, block_mask, sm_scale)
 
     @staticmethod
     def backward(ctx, do):
@@ -282,116 +260,12 @@ class _sparse_attention(torch.autograd.Function):
 def sparse_attention_factory(BLOCK_M=64, BLOCK_N=64, **kwargs):
     class _sparse_attention_config(_sparse_attention):
         @staticmethod
-        def forward(ctx, q, k, v, block_sparse_dense, sm_scale):
+        def forward(ctx, q, k, v, block_mask, sm_scale):
             # shape constraints
-            return _forward(ctx, q, k, v, block_sparse_dense, sm_scale, BLOCK_M, BLOCK_N,
+            return _forward(ctx, q, k, v, block_mask, sm_scale, BLOCK_M, BLOCK_N,
                             **kwargs
                         )
     return _sparse_attention_config.apply
 
 block_sparse_triton_fn = _sparse_attention.apply
 
-
-
-def test_topk_sparse_attention():
-    # Config
-    BATCH, N_HEADS, SEQ_LEN, D_HEAD = 2, 4, 256, 64
-    TOPK = 2  # Keep top 8 elements per row
-    BLOCK = 64
-    torch.manual_seed(0)
-
-    # Create inputs
-    q = torch.randn(BATCH, N_HEADS, SEQ_LEN, D_HEAD, device='cuda', dtype=torch.bfloat16)
-    k = torch.randn(BATCH, N_HEADS, SEQ_LEN, D_HEAD, device='cuda', dtype=torch.bfloat16)
-    v = torch.randn(BATCH, N_HEADS, SEQ_LEN, D_HEAD, device='cuda', dtype=torch.bfloat16)
-    sm_scale = 1.0 / (D_HEAD ** 0.5)
-
-    # Create sparse mask (downsampled to block level)
-    downsample_factor = BLOCK
-    downsample_len = math.ceil(SEQ_LEN / downsample_factor)
-    x_ds = torch.randn([BATCH, N_HEADS, downsample_len, downsample_len], device='cuda', dtype=torch.bfloat16)
-    x_ds[:,:,:,0] = 100
-    block_mask = get_sparse_attn_mask_from_topk(x_ds, topk=TOPK)
-
-    # Run Triton kernel
-    triton_output = block_sparse_triton_fn(
-        q, k, v, 
-        block_mask,
-        sm_scale
-    )
-
-    # Compute reference
-    # Expand block mask to full attention matrix
-    full_mask = torch.kron(block_mask.float(), 
-                         torch.ones(BLOCK, BLOCK, device='cuda'))
-    full_mask = full_mask[..., :SEQ_LEN, :SEQ_LEN].bool()
-    full_mask = full_mask & torch.tril(torch.ones_like(full_mask))  # Apply causal
-    
-    # PyTorch reference implementation
-    attn = torch.einsum('bhsd,bhtd->bhst', q, k) * sm_scale
-    attn = attn.masked_fill(~full_mask, float('-inf'))
-    attn = F.softmax(attn, dim=-1)
-    ref_output = torch.einsum('bhst,bhtd->bhsd', attn, v)
-
-
-    # Verify accuracy
-    assert torch.allclose(triton_output, ref_output, atol=1e-2, rtol=1e-2), \
-        "Triton output doesn't match reference"
-    print("Pass topk sparse attention test with qlen == klen")
-
-
-
-def test_topk_sparse_attention_qlt_kl():
-    BATCH, N_HEADS = 2, 4
-    Q_LEN, K_LEN, D_HEAD = 128, 256, 64  # qlen < klen; here, past_len = 256 - 128 = 128.
-    TOPK = 1  
-    BLOCK = 64  # block size used in downsampling
-    torch.manual_seed(0)
-
-    # Create inputs.
-    q = torch.randn(BATCH, N_HEADS, Q_LEN, D_HEAD, device='cuda', dtype=torch.bfloat16)
-    k = torch.randn(BATCH, N_HEADS, K_LEN, D_HEAD, device='cuda', dtype=torch.bfloat16)
-    v = torch.randn(BATCH, N_HEADS, K_LEN, D_HEAD, device='cuda', dtype=torch.bfloat16)
-    sm_scale = 1.0 / (D_HEAD ** 0.5)
-
-    downsample_factor = BLOCK
-    downsample_len = math.ceil(K_LEN / downsample_factor)  # number of blocks along one dimension
-    x_ds = torch.randn(BATCH, N_HEADS, downsample_len, downsample_len, 
-                        device='cuda', dtype=torch.bfloat16)
-    # Force the first column to be high so that the first block is always selected.
-    x_ds[:, :, :, 0] = 100
-    block_mask = get_sparse_attn_mask_from_topk(x_ds, topk=TOPK)
-
-    # Run Triton kernel.
-    triton_output = block_sparse_triton_fn(q, k, v, block_mask, sm_scale)
-
-    past_len = K_LEN - Q_LEN
-
-    attn = torch.einsum('bhsd,bhtd->bhst', q, k) * sm_scale
-
-    full_mask_full = torch.kron(block_mask.float(), torch.ones(BLOCK, BLOCK, device='cuda')).bool()
-    full_mask_full = full_mask_full[..., :K_LEN, :K_LEN]
-
-    effective_mask = full_mask_full[..., past_len:K_LEN, :]  # shape: (B, H, Q_LEN, K_LEN)
-
-
-    i_global = torch.arange(past_len, K_LEN, device=k.device).unsqueeze(1)  # shape: (Q_LEN, 1)
-    j_global = torch.arange(K_LEN, device=k.device).unsqueeze(0)              # shape: (1, K_LEN)
-    causal_mask = (j_global <= i_global)  # shape: (Q_LEN, K_LEN)
-
-    final_mask = effective_mask & causal_mask  # shape: (B, H, Q_LEN, K_LEN)
-
-    attn = attn.masked_fill(~final_mask, float('-inf'))
-    attn = F.softmax(attn, dim=-1)
-    ref_output = torch.einsum('bhst,bhtd->bhsd', attn, v)
-
-    # Verify accuracy.
-    assert torch.allclose(triton_output, ref_output, atol=1e-2, rtol=1e-2), \
-        "Triton output doesn't match reference when qlen < klen"
-    
-    print("Pass topk sparse attention test with qlen < klen")
-
-
-if __name__ == "__main__":
-    test_topk_sparse_attention()
-    test_topk_sparse_attention_qlt_kl()

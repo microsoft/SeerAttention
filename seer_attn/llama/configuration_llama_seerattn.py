@@ -164,6 +164,8 @@ class SeerAttnLlamaConfig(PretrainedConfig):
         max_position_embeddings=2048,
         initializer_range=0.02,
         rms_norm_eps=1e-6,
+        use_flash_rope=False,
+        fused_norm=False,
         use_cache=True,
         pad_token_id=None,
         bos_token_id=1,
@@ -208,6 +210,10 @@ class SeerAttnLlamaConfig(PretrainedConfig):
         self.attention_dropout = attention_dropout
         self.mlp_bias = mlp_bias
         self.head_dim = head_dim if head_dim is not None else self.hidden_size // self.num_attention_heads
+        self.use_flash_rope = use_flash_rope
+        self.fused_norm = fused_norm
+        
+        
         # Validate the correctness of rotary position embeddings parameters
         # BC: if there is a 'type' field, copy it it to 'rope_type'.
 
