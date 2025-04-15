@@ -1,5 +1,7 @@
 # Varlen Flash Sparse Attention 
 
+
+
 ## **block_sparse_attn_varlen_gqa_simulate.py** 
 
 This is a training kernel that assumes you give a binary block mask where only k's sequence dimension is compressed, B is block size of sparsity. It requires sparse mask within a gqa group to be the same similar to deepseek's NSA. Since some base models might have a GQA group size smaller than 16, to avoid waste computation on padding, we directly multiply the sparse mask on the tensor without actually doing **sparse** computation. 
@@ -114,3 +116,6 @@ for i in range(len(pooling_gt_1d)):
     gt_i.div_(sum + 1e-6)
 ```
 
+
+## **block_sparse_flash_decode_varlen kernels**
+Those are flash-decoding kernels with block_sparse attention. Masks are required to be the same in a GQA group. 
