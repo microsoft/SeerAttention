@@ -13,6 +13,7 @@ import math
 
 from seer_attn.modules.common import (
     repeat_kv_varlen,
+    repeat_kv,
     pad_input,
     _upad_input,
     get_sparse_attn_mask_from_nz_ratio,
@@ -73,14 +74,42 @@ def sparse_flash_attention_forward(
             )
             attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
         else:
-            attn_output = block_sparse_triton_fn(
+            print("query_states:", query_states.shape)
+            print("key_states:", key_states.shape)
+            print("value_states:", value_states.shape)
+            print("gate_mask:", gate_mask.shape)
+            print("sm_scale:", softmax_scale)
+
+            query_states = query_states.transpose(1, 2).contiguous()
+            key_states = key_states.transpose(1, 2).contiguous()
+            value_states = value_states.transpose(1, 2).contiguous()
+            key_states = repeat_kv(key_states, num_key_value_groups)
+            value_states = repeat_kv(value_states, num_key_value_groups)
+
+
+            causal_mask = torch.kron(
+                gate_mask, torch.ones((block_size, block_size), device=gate_mask.device, dtype=gate_mask.dtype)
+            )
+           
+            causal_mask = torch.tril(causal_mask, diagonal=0)
+            print("causal_mask:", causal_mask)
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
                 query_states,
                 key_states,
                 value_states,
-                block_mask=gate_mask,
-                BLOCK_M=block_size,
-                BLOCK_N=block_size,
+                is_causal=True,
+                attn_mask=causal_mask,
             )
+
+            # attn_output = block_sparse_triton_fn(
+            #     query_states,
+            #     key_states,
+            #     value_states,
+            #     block_sparse_mask=gate_mask,
+            #     sm_scale=softmax_scale,
+            #     BLOCK_M=block_size,
+            #     BLOCK_N=block_size,
+            # )
     else:
 
         cache_seqlens = torch.sum(attention_mask.to(torch.int32), dim=-1, dtype=torch.int32) 

@@ -52,7 +52,7 @@ from seer_attn.modules.common import (
 from einops import rearrange
 
 from seer_attn.modules.attention_distill import attention_distill_forward
-from seer_attn.modules.attention_sparse_forward import sparse_flash_attention_forward
+from seer_attn.modules.attention_forward import sparse_flash_attention_forward
 import copy, math, os
 from huggingface_hub import hf_hub_download
 from flash_attn.layers.rotary import apply_rotary_emb_func
@@ -274,9 +274,9 @@ class LlamaSeerAttention(nn.Module):
                 softmax_scale=self.scaling,
                 attn_gate_score=attn_gate_score,
                 sparsity_method=self.config.seerattn_sparsity_method,
-                threshold=self.config.seerattn_sparsity_threshold,
-                nz_ratio=self.config.seerattn_sparsity_nz_ratio,
-                last_block_dense=self.config.seerattn_sparsity_last_block_dense,
+                threshold=self.config.seerattn_threshold,
+                nz_ratio=self.config.seerattn_nz_ratio,
+                last_block_dense=self.config.seerattn_last_block_dense,
                 block_size=self.config.seerattn_gate_block_size,
                 num_key_value_groups=self.num_key_value_groups,
                 profile_file=self.profile_file,
@@ -294,7 +294,11 @@ class LlamaSeerAttention(nn.Module):
             mask_gate_prediction = mask_gate_prediction[:, :, mask_gate_prediction.shape[2]//4:].to(torch.float32)
             mask_gate_prediction = F.log_softmax(mask_gate_prediction, dim=-1)
             mask_loss = self.mask_loss_func(mask_gate_prediction, mask_ground_truth)
-            
+        else:
+            mask_loss = 0.0
+            mask_gate_prediction = None
+            mask_ground_truth = None
+
         # In SeerAttention, output_attentions also means output mask_gate_prediction and mask_ground_truth
         if not kwargs.get("output_attentions", False):
             mask_gate_prediction = None
@@ -473,8 +477,7 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
 
         block_attention_mask = self._seerattn_update_causal_mask(
             attention_mask,
-            inputs_embeds.dtype,
-            inputs_embeds.device,
+            inputs_embeds,
             past_seen_tokens
         )
         
@@ -559,24 +562,32 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
     def _seerattn_update_causal_mask(
         self,
         attention_mask: torch.Tensor,
-        dtype: torch.dtype,
-        device: torch.device,
+        inputs_embeds: torch.Tensor,
         past_seen_tokens: int,
-    ):
+    ):  
+        dtype = inputs_embeds.dtype
+        device = inputs_embeds.device
+        if past_seen_tokens == 0:
+            if attention_mask is not None:
+                batch_size, seqlen = attention_mask.shape
+                min_dtype = torch.finfo(dtype).min
+                causal_mask = torch.triu(torch.full((seqlen, seqlen), min_dtype, dtype=dtype, device=device), diagonal=1)
+                causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, seqlen, seqlen)
+                key_padding_mask = (attention_mask == 0).unsqueeze(1).unsqueeze(2)
+                causal_mask = causal_mask.masked_fill(key_padding_mask, min_dtype)
+                gate_mask = torch.nn.functional.max_pool2d(
+                    causal_mask, 
+                    (self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), 
+                    stride=(self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), 
+                    ceil_mode=True
+                )
+            else:
+                batch_size, seqlen = inputs_embeds.shape[:2]
+                min_dtype = torch.finfo(dtype).min
+                number_of_blocks = math.ceil(seqlen / self.config.seerattn_gate_block_size)
+                gate_mask = torch.triu(torch.full((number_of_blocks, number_of_blocks), min_dtype, dtype=dtype, device=device), diagonal=1)
+                gate_mask = gate_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, number_of_blocks, number_of_blocks)
 
-        if past_seen_tokens > 0:
-            batch_size, seqlen = attention_mask.shape
-            min_dtype = torch.finfo(dtype).min
-            causal_mask = torch.triu(torch.full((seqlen, seqlen), min_dtype, dtype=dtype, device=device), diagonal=1)
-            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, seqlen, seqlen)
-            key_padding_mask = (attention_mask == 0).unsqueeze(1).unsqueeze(2)
-            causal_mask = causal_mask.masked_fill(key_padding_mask, min_dtype)
-            gate_mask = torch.nn.functional.max_pool2d(
-                causal_mask, 
-                (self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), 
-                stride=(self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), 
-                ceil_mode=True
-            )
             return gate_mask
         else:
             return None

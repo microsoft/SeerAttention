@@ -33,7 +33,7 @@ from seer_attn.qwen.configuration_qwen2_seerattn import SeerAttnQwen2Config
 from seer_attn.utils import BaseModelOutputWithPastAndSeer, CausalLMOutputWithPastAndSeer
 from seer_attn.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
 from seer_attn.kernels.attn_pooling_kernel import attn_with_pooling
-from seer_attn.kernels.block_sparse_attn import get_sparse_attn_mask_from_topk, get_sparse_attn_mask_from_threshold, sparse_attention_factory
+# from seer_attn.kernels.block_sparse_attn import get_sparse_attn_mask_from_topk, get_sparse_attn_mask_from_threshold, sparse_attention_factory
 import copy, math, os
 from huggingface_hub import hf_hub_download
 

@@ -185,8 +185,7 @@ def _fwd_kernel(
     out_ptrs = Out + off_o
     tl.store(out_ptrs, acc, mask=offs_m[:, None] < N_CTX)
 
-def _forward(
-        ctx, 
+def block_sparse_triton_fn(
         q, 
         k, 
         v, 
@@ -194,8 +193,6 @@ def _forward(
         sm_scale, 
         BLOCK_M=64, 
         BLOCK_N=64, 
-        num_warps=None, 
-        num_stages=1, 
         out=None
     ):
 
@@ -204,6 +201,8 @@ def _forward(
     assert k.shape[2] == v.shape[2]
     o = out if out is not None else torch.empty_like(q).contiguous()
     grid = (triton.cdiv(q.shape[2], BLOCK_M), q.shape[0] * q.shape[1])
+
+    assert q.is_contiguous() and k.is_contiguous() and v.is_contiguous() and block_sparse_mask.is_contiguous()
 
     assert q.shape[-1] in [64, 128]
     BLOCK_DMODEL = q.shape[-1]
@@ -243,29 +242,4 @@ def _forward(
 
 
 
-
-class _sparse_attention(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, q, k, v, block_mask, sm_scale):
-        # shape constraints
-        return _forward(ctx, q, k, v, block_mask, sm_scale)
-
-    @staticmethod
-    def backward(ctx, do):
-        # No gradient propagation.
-        raise NotImplementedError("It does not support gradient propagation yet")
-        return None, None, None, None, None
-
-def sparse_attention_factory(BLOCK_M=64, BLOCK_N=64, **kwargs):
-    class _sparse_attention_config(_sparse_attention):
-        @staticmethod
-        def forward(ctx, q, k, v, block_mask, sm_scale):
-            # shape constraints
-            return _forward(ctx, q, k, v, block_mask, sm_scale, BLOCK_M, BLOCK_N,
-                            **kwargs
-                        )
-    return _sparse_attention_config.apply
-
-block_sparse_triton_fn = _sparse_attention.apply
 
