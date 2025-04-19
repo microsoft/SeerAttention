@@ -38,7 +38,6 @@ def _fwd_kernel_inner(
     stride_kt, stride_vt, stride_bmask_n,
     sm_scale,
     seqlen_k,
-    past_len,
     LAST_K_BLOCK: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -63,7 +62,7 @@ def _fwd_kernel_inner(
 
         # the following is needed only when LAST_K_BLOCK or BLOCK_M < BLOCK_N
         if LAST_K_BLOCK :
-            qk += tl.where(offs_m[:, None] + past_len >= (start_n + offs_n[None, :]), 0, float('-inf'))
+            qk += tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), 0, float('-inf'))
 
 
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
@@ -90,7 +89,6 @@ def _fwd_kernel_inner(
 
 
 
-
 @triton.jit
 def _fwd_kernel(
     Q, K, V, sm_scale,
@@ -102,12 +100,11 @@ def _fwd_kernel(
     stride_bmz, stride_bmh, stride_bmm, stride_bmn,
     stride_oz, stride_oh, stride_om, stride_od,
     H, N_CTX,
-    PAST_LEN,
     BLOCK_M: tl.constexpr, 
     BLOCK_N: tl.constexpr,
     BLOCK_DMODEL: tl.constexpr,
 ):
-    Q_LEN = N_CTX - PAST_LEN
+    Q_LEN = N_CTX
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
     off_h = off_hz % H
@@ -152,7 +149,6 @@ def _fwd_kernel(
             stride_kn, stride_vn, stride_bmn,
             sm_scale,
             N_CTX,
-            PAST_LEN,
             False,
             BLOCK_M,
             BLOCK_N,
@@ -169,7 +165,6 @@ def _fwd_kernel(
         stride_kn, stride_vn, stride_bmn,
         sm_scale,
         N_CTX,
-        PAST_LEN,
         True,
         BLOCK_M,
         BLOCK_N,
@@ -185,6 +180,17 @@ def _fwd_kernel(
     out_ptrs = Out + off_o
     tl.store(out_ptrs, acc, mask=offs_m[:, None] < N_CTX)
 
+
+
+def get_stride_from_layout(x, layout):
+    if layout == 'bhsd':
+        return x.stride()
+    elif layout == 'bshd':
+        return (x.stride(0), x.stride(2), x.stride(1), x.stride(3),)
+    else:
+        raise ValueError(f"Unsupported layout: {layout}")
+
+
 def block_sparse_triton_fn(
         q, 
         k, 
@@ -193,18 +199,14 @@ def block_sparse_triton_fn(
         sm_scale, 
         BLOCK_M=64, 
         BLOCK_N=64, 
-        out=None
+        layout='bhsd',
     ):
 
 
-    assert q.shape[-1] == k.shape[-1] == v.shape[-1]
-    assert k.shape[2] == v.shape[2]
-    o = out if out is not None else torch.empty_like(q).contiguous()
-    grid = (triton.cdiv(q.shape[2], BLOCK_M), q.shape[0] * q.shape[1])
 
+    o = torch.empty_like(q).contiguous()
     assert q.is_contiguous() and k.is_contiguous() and v.is_contiguous() and block_sparse_mask.is_contiguous()
-
-    assert q.shape[-1] in [64, 128]
+    assert q.shape[-1] == k.shape[-1] == v.shape[-1]
     BLOCK_DMODEL = q.shape[-1]
 
     if is_hip():
@@ -212,25 +214,28 @@ def block_sparse_triton_fn(
     else:
         num_warps, num_stages = 4, 2
 
-    N_CTX = k.shape[2]
-    PAST_LEN = N_CTX - q.shape[2]
-
-
-    H = q.shape[1]
-
+    if layout == 'bhsd':
+        N_CTX = k.shape[2]
+        grid = (triton.cdiv(q.shape[2], BLOCK_M), q.shape[0] * q.shape[1])
+        H = q.shape[1]
+    elif layout == 'bshd':
+        N_CTX = k.shape[1]
+        grid = (triton.cdiv(q.shape[1], BLOCK_M), q.shape[0] * q.shape[2])
+        H = q.shape[2]
+    else:
+        raise ValueError(f"Unsupported layout: {layout}")
 
     with torch.cuda.device(q.device.index): 
         _fwd_kernel[grid](
             q, k, v, sm_scale,
             block_sparse_mask,
             o,
-            *q.stride(), 
-            *k.stride(), 
-            *v.stride(), 
+            *get_stride_from_layout(q, layout),
+            *get_stride_from_layout(k, layout),
+            *get_stride_from_layout(v, layout),
             *block_sparse_mask.stride(), 
-            *o.stride(),
+            *get_stride_from_layout(o, layout),
             H, N_CTX,
-            PAST_LEN,
             BLOCK_M,
             BLOCK_N,
             BLOCK_DMODEL,

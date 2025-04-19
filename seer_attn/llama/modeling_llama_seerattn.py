@@ -45,6 +45,7 @@ from seer_attn.llama.configuration_llama_seerattn import SeerAttnLlamaConfig
 from seer_attn.utils import BaseModelOutputWithPastAndSeer, CausalLMOutputWithPastAndSeer
 from seer_attn.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
 from seer_attn.modules.common import (
+    repeat_kv,
     apply_rotary_pos_emb,
     get_sparse_attn_mask_from_nz_ratio,
     get_sparse_attn_mask_from_threshold
@@ -203,6 +204,7 @@ class LlamaSeerAttention(nn.Module):
             config.seerattn_gate_hidden_size,
             num_k_head=config.num_key_value_heads, 
             num_q_head=config.num_attention_heads,
+            force_double=config.seerattn_gate_force_double,
             use_flash_rope=config.use_flash_rope,
         )
 
@@ -231,14 +233,13 @@ class LlamaSeerAttention(nn.Module):
         value_states = rearrange(value_states, '... (h d) -> ... h d', d=self.head_dim)
         
             
-        if q_len > 1:
-            attn_gate_score = self.attn_gate(
-                query_states, 
-                key_states, 
-                block_attention_mask, 
-                block_position_embeddings, 
-                use_softmax=not self.training and self.config.seerattn_sparsity_method == "threshold",
-            )
+        attn_gate_output = self.attn_gate(
+            query_states, 
+            key_states, 
+            block_attention_mask, 
+            block_position_embeddings, 
+            use_softmax=not self.training and self.config.seerattn_sparsity_method == "threshold",
+        )
     
         cos, sin = position_embeddings
         if self.config.use_flash_rope:
@@ -256,7 +257,7 @@ class LlamaSeerAttention(nn.Module):
 
         if self.training:
             # get the block (pooled) mask ground truth
-            attn_output, mask_ground_truth = attention_distill_forward(
+            attn_output, ground_truth_mask = attention_distill_forward(
                 query_states,
                 key_states,
                 value_states,
@@ -272,7 +273,7 @@ class LlamaSeerAttention(nn.Module):
                 attention_mask,
                 query_length=q_len,
                 softmax_scale=self.scaling,
-                attn_gate_score=attn_gate_score,
+                attn_gate_score=attn_gate_output,
                 sparsity_method=self.config.seerattn_sparsity_method,
                 threshold=self.config.seerattn_threshold,
                 nz_ratio=self.config.seerattn_nz_ratio,
@@ -283,27 +284,27 @@ class LlamaSeerAttention(nn.Module):
             )
 
 
-        attn_output = attn_output.transpose(1, 2).contiguous()
+        
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         
-
+        
         if self.training:
             # remove the first quarter of the data for training stability
-            mask_ground_truth = mask_ground_truth[:, :, mask_ground_truth.shape[2]//4:].to(torch.float32)
-            mask_gate_prediction = mask_gate_prediction[:, :, mask_gate_prediction.shape[2]//4:].to(torch.float32)
-            mask_gate_prediction = F.log_softmax(mask_gate_prediction, dim=-1)
-            mask_loss = self.mask_loss_func(mask_gate_prediction, mask_ground_truth)
+            ground_truth_mask = ground_truth_mask[:, :, ground_truth_mask.shape[2]//4:].to(torch.float32)
+            attn_gate_output = attn_gate_output[:, :, attn_gate_output.shape[2]//4:].to(torch.float32)
+            attn_gate_output = F.log_softmax(attn_gate_output, dim=-1)
+            mask_loss = self.mask_loss_func(attn_gate_output, ground_truth_mask)
         else:
             mask_loss = 0.0
-            mask_gate_prediction = None
-            mask_ground_truth = None
+            attn_gate_output = None
+            ground_truth_mask = None
 
-        # In SeerAttention, output_attentions also means output mask_gate_prediction and mask_ground_truth
+        # In SeerAttention, output_attentions also means output attn_gate_output and ground_truth_mask
         if not kwargs.get("output_attentions", False):
-            mask_gate_prediction = None
-            mask_ground_truth = None
-        return attn_output, mask_loss, None, mask_gate_prediction, mask_ground_truth
+            attn_gate_output = None
+            ground_truth_mask = None
+        return attn_output, mask_loss, None, attn_gate_output, ground_truth_mask
 
 
 class SeerAttnLlamaDecoderLayer(nn.Module):
@@ -444,6 +445,11 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndSeer]:
+
+        if attention_mask is not None:
+            if not (attention_mask == 0).any().item():
+                attention_mask = None
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -478,7 +484,6 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
         block_attention_mask = self._seerattn_update_causal_mask(
             attention_mask,
             inputs_embeds,
-            past_seen_tokens
         )
         
         hidden_states = inputs_embeds
@@ -563,34 +568,59 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
         self,
         attention_mask: torch.Tensor,
         inputs_embeds: torch.Tensor,
-        past_seen_tokens: int,
     ):  
+
+        batch_size, seqlen = inputs_embeds.shape[:2]
+        if seqlen == 1:
+            return None
+        
+        block_size = self.config.seerattn_gate_block_size
         dtype = inputs_embeds.dtype
         device = inputs_embeds.device
-        if past_seen_tokens == 0:
-            if attention_mask is not None:
-                batch_size, seqlen = attention_mask.shape
-                min_dtype = torch.finfo(dtype).min
-                causal_mask = torch.triu(torch.full((seqlen, seqlen), min_dtype, dtype=dtype, device=device), diagonal=1)
-                causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, seqlen, seqlen)
-                key_padding_mask = (attention_mask == 0).unsqueeze(1).unsqueeze(2)
-                causal_mask = causal_mask.masked_fill(key_padding_mask, min_dtype)
-                gate_mask = torch.nn.functional.max_pool2d(
-                    causal_mask, 
-                    (self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), 
-                    stride=(self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), 
-                    ceil_mode=True
-                )
-            else:
-                batch_size, seqlen = inputs_embeds.shape[:2]
-                min_dtype = torch.finfo(dtype).min
-                number_of_blocks = math.ceil(seqlen / self.config.seerattn_gate_block_size)
-                gate_mask = torch.triu(torch.full((number_of_blocks, number_of_blocks), min_dtype, dtype=dtype, device=device), diagonal=1)
-                gate_mask = gate_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, number_of_blocks, number_of_blocks)
+        if attention_mask is not None:
+            pad_length = seqlen - torch.sum(attention_mask, dim=-1)
+            pad_blocks = torch.floor(pad_length / block_size)  # Shape: [batch_size]
 
-            return gate_mask
+            min_dtype = torch.finfo(dtype).min
+            number_of_blocks = math.ceil(seqlen / block_size)
+            gate_mask = torch.triu(
+                torch.full((number_of_blocks, number_of_blocks), min_dtype, dtype=dtype, device=device),
+                diagonal=1
+            )
+            # Expand to shape [batch_size, 1, number_of_blocks, number_of_blocks]
+            gate_mask = gate_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, number_of_blocks, number_of_blocks)
+
+            # Create block indices along block dimension
+            block_indices = torch.arange(number_of_blocks, device=device)  # Shape [number_of_blocks]
+
+            # Create masks for query (rows) and key (columns) per batch
+            # pad_blocks has shape [batch_size]. Convert to int64.
+            pad_blocks_int = pad_blocks.to(torch.int64)
+
+            # For the query side: For each batch, block index < pad_blocks[i] should be masked.
+            query_mask = block_indices.unsqueeze(0) < pad_blocks_int.unsqueeze(1)  # shape: [batch_size, number_of_blocks]
+            # For the key side, the same logic applies.
+            key_mask = query_mask.clone()  # shape: [batch_size, number_of_blocks]
+
+            # Expand to match gate_mask dimensions.
+            # For queries: shape [batch_size, 1, number_of_blocks, 1]
+            query_mask = query_mask.unsqueeze(1).unsqueeze(-1)
+            # For keys: shape [batch_size, 1, 1, number_of_blocks]
+            key_mask = key_mask.unsqueeze(1).unsqueeze(2)
+
+            # Combine the masks: positions where either the query or the key block is padded.
+            combined_mask = query_mask.logical_or(key_mask)
+
+            # Set these positions in gate_mask to min_dtype.
+            gate_mask = gate_mask.masked_fill(combined_mask, min_dtype)
         else:
-            return None
+            min_dtype = torch.finfo(dtype).min
+            number_of_blocks = math.ceil(seqlen / block_size)
+            gate_mask = torch.triu(torch.full((number_of_blocks, number_of_blocks), min_dtype, dtype=dtype, device=device), diagonal=1)
+            gate_mask = gate_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, number_of_blocks, number_of_blocks)
+
+        return gate_mask
+
 
 
 class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
@@ -676,9 +706,6 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
 
-        # if attention_mask!= None and torch.any(attention_mask == False):
-        #     raise ValueError("Batched inference with Attention mask not supported yet")
-
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -703,7 +730,6 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
-
         loss = None
         if not self.training and labels is not None: ## current self-distillation training does not require loss computation, re-enable if needed
             loss_fct = torch.nn.CrossEntropyLoss(reduction='sum')

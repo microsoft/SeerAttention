@@ -251,11 +251,11 @@ def flash_decode_leftpad(
     o_partial = torch.empty((batch, heads, num_splits, dim_v), device=q.device, dtype=q.dtype)
     meta_data = torch.empty((batch, heads, 2, num_splits), device=q.device, dtype=torch.float32)
 
-    BLOCK_D = dim
-    BLOCK_H = group_size if group_size > 16 else 16
-    grid = (batch, heads_kv, num_splits)
 
     with torch.cuda.device(q.device.index): 
+        BLOCK_D = dim
+        BLOCK_H = group_size if group_size > 16 else 16
+        grid = (batch, heads_kv, num_splits)
         _split_kernel[grid](
             q,
             k_cache,
@@ -277,9 +277,9 @@ def flash_decode_leftpad(
             BLOCK_D=BLOCK_D,
         )
 
-    output = torch.zeros((batch, heads, dim_v), device=q.device, dtype=q.dtype)
-    grid = (batch, heads)
-    with torch.cuda.device(q.device.index): 
+        output = torch.zeros((batch, heads, dim_v), device=q.device, dtype=q.dtype)
+        grid = (batch, heads)
+    
         _merge_kernel[grid](
             o_partial,
             meta_data,

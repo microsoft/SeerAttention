@@ -1,6 +1,7 @@
 import torch
 from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
 import math
+import torch.nn.functional as F
 
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""

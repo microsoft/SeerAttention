@@ -238,7 +238,7 @@ def infer(args):
                     do_sample=True,
                 )
             else:
-                outpus = batch_exist_generate(
+                outputs = batch_exist_generate(
                     model,
                     input_ids=batch_input_ids,
                     attention_mask=attention_mask,

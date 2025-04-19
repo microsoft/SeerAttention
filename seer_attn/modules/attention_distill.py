@@ -35,7 +35,7 @@ def attention_distill_forward(
         softmax_scale,
         block_size,      
     )
-
+    attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, mask_ground_truth
 

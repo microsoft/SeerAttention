@@ -95,7 +95,14 @@ def _fwd_kernel_inner(
     return acc, l_i, m_i
 
 
-
+# @triton.autotune(
+#     configs=[
+#         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
+#         for num_warps in [1, 2, 4]\
+#         for num_stages in [1, 2, 3, 4, 7]
+#     ],
+#     key=['BLOCK_M', 'BLOCK_N', 'BLOCK_D'],
+# )
 @triton.jit
 def _fwd_kernel_varlen(
     Q, K, V, Out, L,
@@ -110,6 +117,7 @@ def _fwd_kernel_varlen(
     stride_lt, stride_lh,
     stride_bmask_z, stride_bmask_h, stride_bmask_m, stride_bmask_n,
     q_k_ratio,
+    output_lse: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_D: tl.constexpr,
@@ -200,16 +208,16 @@ def _fwd_kernel_varlen(
     acc = acc * l_recip
     acc = acc.to(Out.dtype.element_ty) 
 
-
-    l_ptrs = L + off_h_q * stride_lh + cu_q_start * stride_lt + offs_m * stride_lt
-    end_m_idx = (start_m + 1) * BLOCK_M
-    overflow_size = end_m_idx - seqlen_q
-    if overflow_size > 0:
-        boundary = tl.full((BLOCK_M, ), BLOCK_M - overflow_size, dtype=tl.int64)
-        l_ptrs_mask = tl.arange(0, BLOCK_M) < boundary
-        tl.store(l_ptrs, m_i, mask=l_ptrs_mask) # the log of the normalization constant
-    else:
-        tl.store(l_ptrs, m_i) # the log of the normalization constant
+    if output_lse:
+        l_ptrs = L + off_h_q * stride_lh + cu_q_start * stride_lt + offs_m * stride_lt
+        end_m_idx = (start_m + 1) * BLOCK_M
+        overflow_size = end_m_idx - seqlen_q
+        if overflow_size > 0:
+            boundary = tl.full((BLOCK_M, ), BLOCK_M - overflow_size, dtype=tl.int64)
+            l_ptrs_mask = tl.arange(0, BLOCK_M) < boundary
+            tl.store(l_ptrs, m_i, mask=l_ptrs_mask) # the log of the normalization constant
+        else:
+            tl.store(l_ptrs, m_i) # the log of the normalization constant
 
 
     tl.store(Out + offs_m[:, None] * stride_ot + offs_d[None, :] * stride_od, acc,
@@ -225,6 +233,7 @@ def blocksparse_flash_attn_varlen_fwd(
     sm_scale,
     block_mask,
     block_size=64,
+    output_lse=True
 ):
 
     # split q to blocks
@@ -281,11 +290,14 @@ def blocksparse_flash_attn_varlen_fwd(
             BLOCK_N = block_size,
             BLOCK_D = block_d,
             num_warps = 4,
-            num_stages = 1,
+            num_stages = 2,
+            output_lse=output_lse,
             **extra_kern_args
         )
-
-    return out, L
+    if output_lse:
+        return out, L
+    else:
+        return out
 
 
 @triton.jit

@@ -6,7 +6,4 @@ __all__ = [
     "SeerAttnLlamaForCausalLM",
     "SeerAttnQwen2ForCausalLM",
     "SeerDecodingQwen2ForCausalLM",
-    "attn_with_pooling",
-    "block_2d_sparse_attn_varlen_func",
-    "block_1d_gqa_sparse_attn_varlen_func"
 ]

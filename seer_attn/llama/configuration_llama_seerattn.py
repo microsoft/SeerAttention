@@ -164,8 +164,8 @@ class SeerAttnLlamaConfig(PretrainedConfig):
         max_position_embeddings=2048,
         initializer_range=0.02,
         rms_norm_eps=1e-6,
-        use_flash_rope=False,
-        fused_norm=False,
+        use_flash_rope=True,
+        fused_norm=True,
         use_cache=True,
         pad_token_id=None,
         bos_token_id=1,
@@ -185,6 +185,7 @@ class SeerAttnLlamaConfig(PretrainedConfig):
         seerattn_gate_block_size=64, 
         seerattn_gate_hidden_size=128,
         seerattn_last_block_dense=True,
+        seerattn_gate_force_double=False,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -224,6 +225,7 @@ class SeerAttnLlamaConfig(PretrainedConfig):
         self.seerattn_gate_block_size = seerattn_gate_block_size
         self.seerattn_gate_hidden_size = seerattn_gate_hidden_size
         self.seerattn_last_block_dense = seerattn_last_block_dense
+        self.seerattn_gate_force_double = seerattn_gate_force_double
         
         assert self.seerattn_sparsity_method in ['threshold', 'nz_ratio']
         

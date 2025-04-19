@@ -1,3 +1,23 @@
+# coding=utf-8
+# Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.
+#
+# This code is based on EleutherAI's GPT-NeoX library and the GPT-NeoX
+# and OPT implementations in this library. It has been modified from its
+# original forms to accommodate minor architectural differences compared
+# to GPT-NeoX and OPT used by the Meta AI team that trained the model.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Modified by Yizhao Gao from huggingface qwen implementation
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -32,256 +52,24 @@ from transformers.utils.deprecation import deprecate_kwarg
 from seer_attn.qwen.configuration_qwen2_seerattn import SeerAttnQwen2Config
 from seer_attn.utils import BaseModelOutputWithPastAndSeer, CausalLMOutputWithPastAndSeer
 from seer_attn.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
-from seer_attn.kernels.attn_pooling_kernel import attn_with_pooling
-# from seer_attn.kernels.block_sparse_attn import get_sparse_attn_mask_from_topk, get_sparse_attn_mask_from_threshold, sparse_attention_factory
+from seer_attn.modules.common import (
+    repeat_kv,
+    apply_rotary_pos_emb,
+    get_sparse_attn_mask_from_nz_ratio,
+    get_sparse_attn_mask_from_threshold
+)
+from einops import rearrange
 import copy, math, os
+from seer_attn.modules.attention_distill import attention_distill_forward
+from seer_attn.modules.attention_forward import sparse_flash_attention_forward
 from huggingface_hub import hf_hub_download
+from seer_attn.modules.layernorm import RMSNorm
+from flash_attn.layers.rotary import apply_rotary_emb_func
 
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "meta-qwen2/Qwen2-2-7b-hf"
 _CONFIG_FOR_DOC = "Qwen2Config"
-
-
-class Qwen2MLP(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = ACT2FN[config.hidden_act]
-
-    def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-        return down_proj
-
-
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
-
-
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-    """Applies Rotary Position Embedding to the query and key tensors.
-
-    Args:
-        q (`torch.Tensor`): The query tensor.
-        k (`torch.Tensor`): The key tensor.
-        cos (`torch.Tensor`): The cosine part of the rotary embedding.
-        sin (`torch.Tensor`): The sine part of the rotary embedding.
-        position_ids (`torch.Tensor`, *optional*):
-            Deprecated and unused.
-        unsqueeze_dim (`int`, *optional*, defaults to 1):
-            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
-            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
-            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
-            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
-            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
-            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
-    Returns:
-        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
-    """
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
-
-
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
-    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
-    """
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
-
-
-def eager_attention_forward(
-    module: nn.Module,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention_mask: Optional[torch.Tensor],
-    scaling: float,
-    dropout: float = 0.0,
-    **kwargs,
-):
-    key_states = repeat_kv(key, module.num_key_value_groups)
-    value_states = repeat_kv(value, module.num_key_value_groups)
-
-    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
-    if attention_mask is not None:
-        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        attn_weights = attn_weights + causal_mask
-
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
-    attn_output = torch.matmul(attn_weights, value_states)
-    attn_output = attn_output.transpose(1, 2).contiguous()
-
-    return attn_output, attn_weights
-
-
-class SeerAttnQwen2Attention(nn.Module):
-    """Multi-headed attention from 'Attention Is All You Need' paper"""
-
-    def __init__(self, config: SeerAttnQwen2Config, layer_idx: int):
-        super().__init__()
-        self.config = config
-        self.layer_idx = layer_idx
-        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.scaling = self.head_dim**-0.5
-        self.attention_dropout = config.attention_dropout
-        self.is_causal = True
-        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=True)
-        self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
-        self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
-        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
-
-        self.attn_gate = ATTNGATE_CLASSES[config.seerattn_gate_type](
-            config.seerattn_gate_block_size, 
-            self.head_dim, 
-            config.seerattn_gate_hidden_size,
-            num_k_head=config.num_key_value_heads, 
-            num_q_head=config.num_attention_heads,
-            force_double=config.seerattn_gate_force_double,
-        )
-
-        self.attn_func = sparse_attention_factory(config.seerattn_gate_block_size, config.seerattn_gate_block_size)
-        self.mask_loss_func = torch.nn.KLDivLoss()
-        self.profile_file = os.environ.get("PROFILE_FILE", None)
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: Tuple[torch.Tensor, torch.Tensor],
-        attention_mask: Optional[torch.Tensor],
-        past_key_value: Optional[Cache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        block_position_embeddings: Tuple[torch.Tensor, torch.Tensor] = None,
-        block_attention_mask: Optional[torch.Tensor] = None,
-        **kwargs,
-        # **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-
-        query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-
-        q_len = query_states.shape[-2]
-
-        # get the block mask prediction from gate [before ROPE] 
-        if q_len > 1:
-            use_softmax = not self.training and self.config.seerattn_sparsity_method == "threshold"
-            mask_gate_prediction = self.attn_gate(query_states, key_states, block_attention_mask, block_position_embeddings, use_softmax)
-        
-        cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-        if past_key_value is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
-
-        ### removed the sliding window part
-        k_len = query_states.shape[-2]
-
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
-
-        query_states = query_states.contiguous()
-        key_states = key_states.contiguous()
-        value_states = value_states.contiguous()
-
-        if self.training:
-            # get the block (pooled) mask ground truth
-            attn_output, mask_ground_truth = attn_with_pooling(
-                query_states,
-                key_states,
-                value_states,
-                True, 
-                1.0 / math.sqrt(self.head_dim),
-                self.config.seerattn_gate_block_size,      
-            )
-        
-        elif q_len > 1 and q_len == k_len: ## prefill inference
-            # get the sparse mask
-            if self.config.seerattn_sparsity_method == "nz_ratio":
-                downsampled_len = math.ceil(key_states.shape[-2] / self.config.seerattn_gate_block_size)
-                topk_nz_ratio = 1 - math.sqrt(1 - self.config.seerattn_nz_ratio)
-                topk = int(topk_nz_ratio * downsampled_len)
-                topk = 1 if topk == 0 else topk
-                ## This attention mask actually a bool type block sparse attention
-                sparse_attn_mask = get_sparse_attn_mask_from_topk(mask_gate_prediction, topk, self.config.seerattn_last_block_dense)
-            elif self.config.seerattn_sparsity_method == "threshold":
-                sparse_attn_mask = get_sparse_attn_mask_from_threshold(mask_gate_prediction, self.config.seerattn_threshold, self.config.seerattn_last_block_dense)
-                downsampled_len = sparse_attn_mask.shape[-1]
-                total_causal_size = ((1 + downsampled_len) * downsampled_len / 2) * sparse_attn_mask.shape[0] * sparse_attn_mask.shape[1]
-                if self.profile_file is not None:
-                    with open(self.profile_file, "a") as f:
-                        f.write(f"{hidden_states.shape[1]}: {sparse_attn_mask.sum().item() / total_causal_size}\n")
-
-            else:
-                raise NotImplementedError("The sparsity method is not implemented")
-        
-            attn_output = self.attn_func(
-                query_states,
-                key_states,
-                value_states,
-                sparse_attn_mask,
-                1.0 / math.sqrt(self.head_dim),
-            )
-
-        else: 
-            causal_mask = attention_mask
-            if attention_mask is not None:
-                causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
-
-            is_causal = True if causal_mask is None and q_len > 1 else False
-
-            attn_output = torch.nn.functional.scaled_dot_product_attention(
-                query_states,
-                key_states,
-                value_states,
-                attn_mask=causal_mask,
-                dropout_p=self.attention_dropout if self.training else 0.0,
-                is_causal=is_causal,
-            ) 
-
-
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        attn_output = self.o_proj(attn_output)
-
-
-        if self.training:
-            # remove the first quarter of the data for training stability
-            mask_ground_truth = mask_ground_truth[:, :, mask_ground_truth.shape[2]//4:].to(torch.float32)
-            mask_gate_prediction = mask_gate_prediction[:, :, mask_gate_prediction.shape[2]//4:].to(torch.float32)
-            mask_gate_prediction = F.log_softmax(mask_gate_prediction, dim=-1)
-            mask_loss = self.mask_loss_func(mask_gate_prediction, mask_ground_truth)
-        else:
-            mask_loss = 0.0
-
-        # In SeerAttention, output_attentions also means output mask_gate_prediction and mask_ground_truth
-        if not kwargs.get("output_attentions", False):
-            attn_weights = None
-            mask_gate_prediction = None
-            mask_ground_truth = None
-
-        return attn_output, mask_loss, attn_weights, mask_gate_prediction, mask_ground_truth
 
 
 class Qwen2RMSNorm(nn.Module):
@@ -302,68 +90,6 @@ class Qwen2RMSNorm(nn.Module):
 
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
-
-
-class SeerAttnQwen2DecoderLayer(nn.Module):
-    def __init__(self, config: SeerAttnQwen2Config, layer_idx: int):
-        super().__init__()
-        self.hidden_size = config.hidden_size
-        self.self_attn = SeerAttnQwen2Attention(config=config, layer_idx=layer_idx)
-        self.mlp = Qwen2MLP(config)
-        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        if config.sliding_window and config._attn_implementation != "flash_attention_2":
-            logger.warning_once(
-                f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
-                "unexpected results may be encountered."
-            )
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-        block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        block_attention_mask: Optional[torch.Tensor] = None,
-        **kwargs,
-        # **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        residual = hidden_states
-
-        hidden_states = self.input_layernorm(hidden_states)
-
-        # Self Attention
-        hidden_states, seerattn_mask_loss, self_attn_weights, mask_gate_prediction, mask_ground_truth = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
-            block_position_embeddings=block_position_embeddings,
-            block_attention_mask=block_attention_mask,
-            **kwargs,
-        )
-        hidden_states = residual + hidden_states
-
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-
-        outputs = (hidden_states, seerattn_mask_loss)
-        if output_attentions:
-            outputs += (self_attn_weights, mask_gate_prediction, mask_ground_truth)
-
-        return outputs
 
 
 class Qwen2RotaryEmbedding(nn.Module):
@@ -416,9 +142,15 @@ class Qwen2RotaryEmbedding(nn.Module):
         device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):
             freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos()
-            sin = emb.sin()
+            if self.config.use_flash_rope:
+                emb = freqs ## to use rope func in flash attn
+                cos = emb.cos().squeeze(0)
+                sin = emb.sin().squeeze(0)
+            else:
+                emb = torch.cat((freqs, freqs), dim=-1)
+                cos = emb.cos()
+                sin = emb.sin()
+
 
         # Advanced RoPE types (e.g. yarn) apply a post-processing scaling factor, equivalent to scaling attention
         cos = cos * self.attention_scaling
@@ -427,27 +159,219 @@ class Qwen2RotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
-QWEN2_START_DOCSTRING = r"""
-    This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
-    library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
-    etc.)
+class Qwen2MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.act_fn = ACT2FN[config.hidden_act]
 
-    This model is also a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module) subclass.
-    Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general usage
-    and behavior.
-
-    Parameters:
-        config ([`Qwen2Config`]):
-            Model configuration class with all the parameters of the model. Initializing with a config file does not
-            load the weights associated with the model, only the configuration. Check out the
-            [`~PreTrainedModel.from_pretrained`] method to load the model weights.
-"""
+    def forward(self, x):
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return down_proj
 
 
-@add_start_docstrings(
-    "The bare Qwen2 Model outputting raw hidden-states without any specific head on top.",
-    QWEN2_START_DOCSTRING,
-)
+class SeerAttnQwen2Attention(nn.Module):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
+
+    def __init__(self, config: SeerAttnQwen2Config, layer_idx: int):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+        self.scaling = self.head_dim**-0.5
+        self.attention_dropout = config.attention_dropout
+        self.is_causal = True
+        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=True)
+        self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
+        self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+
+        self.attn_gate = ATTNGATE_CLASSES[config.seerattn_gate_type](
+            config.seerattn_gate_block_size, 
+            self.head_dim, 
+            config.seerattn_gate_hidden_size,
+            num_k_head=config.num_key_value_heads, 
+            num_q_head=config.num_attention_heads,
+            force_double=config.seerattn_gate_force_double,
+            use_flash_rope=config.use_flash_rope,
+        )
+
+        self.mask_loss_func = torch.nn.KLDivLoss()
+        self.profile_file = os.environ.get("PROFILE_FILE", None)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor],
+        attention_mask: Optional[torch.Tensor],
+        past_key_value: Optional[Cache] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        block_position_embeddings: Tuple[torch.Tensor, torch.Tensor] = None,
+        block_attention_mask: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        input_shape = hidden_states.shape[:-1]
+        q_len = hidden_states.shape[1]
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        query_states = rearrange(query_states, '... (h d) -> ... h d', d=self.head_dim)
+        key_states = rearrange(key_states, '... (h d) -> ... h d', d=self.head_dim)
+        value_states = rearrange(value_states, '... (h d) -> ... h d', d=self.head_dim)
+        
+            
+        attn_gate_output = self.attn_gate(
+            query_states, 
+            key_states, 
+            block_attention_mask, 
+            block_position_embeddings, 
+            use_softmax=not self.training and self.config.seerattn_sparsity_method == "threshold",
+        )
+    
+        cos, sin = position_embeddings
+        if self.config.use_flash_rope:
+            query_states = apply_rotary_emb_func(query_states, cos, sin, False, True, cu_seqlens=None, max_seqlen=q_len)
+            key_states = apply_rotary_emb_func(key_states, cos, sin, False, True, cu_seqlens=None, max_seqlen=q_len)
+        else:
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, unsqueeze_dim=2)
+
+        if past_key_value is not None:
+            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_value.update(key_states.flatten(-2, -1), value_states.flatten(-2, -1), self.layer_idx, cache_kwargs)
+            key_states = rearrange(key_states, '... (h d) -> ... h d', d=self.head_dim)
+            value_states = rearrange(value_states, '... (h d) -> ... h d', d=self.head_dim)
+
+        if self.training:
+            # get the block (pooled) mask ground truth
+            attn_output, ground_truth_mask = attention_distill_forward(
+                query_states,
+                key_states,
+                value_states,
+                softmax_scale=self.scaling,
+                block_size=self.config.seerattn_gate_block_size,
+                num_key_value_groups=self.num_key_value_groups,      
+            )
+        else: ## inference
+            attn_output = sparse_flash_attention_forward(
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                query_length=q_len,
+                softmax_scale=self.scaling,
+                attn_gate_score=attn_gate_output,
+                sparsity_method=self.config.seerattn_sparsity_method,
+                threshold=self.config.seerattn_threshold,
+                nz_ratio=self.config.seerattn_nz_ratio,
+                last_block_dense=self.config.seerattn_last_block_dense,
+                block_size=self.config.seerattn_gate_block_size,
+                num_key_value_groups=self.num_key_value_groups,
+                profile_file=self.profile_file,
+            )
+
+
+        
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = self.o_proj(attn_output)
+        
+        
+        if self.training:
+            # remove the first quarter of the data for training stability
+            ground_truth_mask = ground_truth_mask[:, :, ground_truth_mask.shape[2]//4:].to(torch.float32)
+            attn_gate_output = attn_gate_output[:, :, attn_gate_output.shape[2]//4:].to(torch.float32)
+            attn_gate_output = F.log_softmax(attn_gate_output, dim=-1)
+            mask_loss = self.mask_loss_func(attn_gate_output, ground_truth_mask)
+        else:
+            mask_loss = 0.0
+            attn_gate_output = None
+            ground_truth_mask = None
+
+        # In SeerAttention, output_attentions also means output attn_gate_output and ground_truth_mask
+        if not kwargs.get("output_attentions", False):
+            attn_gate_output = None
+            ground_truth_mask = None
+        return attn_output, mask_loss, None, attn_gate_output, ground_truth_mask
+
+
+
+
+class SeerAttnQwen2DecoderLayer(nn.Module):
+    def __init__(self, config: SeerAttnQwen2Config, layer_idx: int):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.self_attn = SeerAttnQwen2Attention(config=config, layer_idx=layer_idx)
+        self.fused_norm = config.fused_norm
+        self.mlp = Qwen2MLP(config)
+        if self.fused_norm:
+            self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        else:
+            self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        
+        if config.sliding_window and config._attn_implementation != "flash_attention_2":
+            logger.warning_once(
+                f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
+                "unexpected results may be encountered."
+            )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        block_attention_mask: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        residual = hidden_states
+
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states, seerattn_mask_loss, self_attn_weights, mask_gate_prediction, mask_ground_truth = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            block_position_embeddings=block_position_embeddings,
+            block_attention_mask=block_attention_mask,
+            **kwargs,
+        )
+        if self.fused_norm:
+            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual, True)
+        else:
+            hidden_states = residual + hidden_states
+            residual = hidden_states
+            hidden_states = self.post_attention_layernorm(hidden_states)
+        
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states, seerattn_mask_loss)
+        if output_attentions:
+            outputs += (self_attn_weights, mask_gate_prediction, mask_ground_truth)
+
+        return outputs
+
+
 class SeerAttnQwen2PreTrainedModel(PreTrainedModel):
     config_class = SeerAttnQwen2Config
     base_model_prefix = "model"
@@ -476,85 +400,6 @@ class SeerAttnQwen2PreTrainedModel(PreTrainedModel):
             module.weight.data.normal_(mean=0.0, std=std)
 
 
-QWEN2_INPUTS_DOCSTRING = r"""
-    Args:
-        input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-            Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you provide
-            it.
-
-            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
-            [`PreTrainedTokenizer.__call__`] for details.
-
-            [What are input IDs?](../glossary#input-ids)
-        attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-
-            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
-            [`PreTrainedTokenizer.__call__`] for details.
-
-            If `past_key_values` is used, optionally only the last `input_ids` have to be input (see
-            `past_key_values`).
-
-            If you want to change padding behavior, you should read [`modeling_opt._prepare_decoder_attention_mask`]
-            and modify to your needs. See diagram 1 in [the paper](https://arxiv.org/abs/1910.13461) for more
-            information on the default strategy.
-
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
-        position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Indices of positions of each input sequence tokens in the position embeddings. Selected in the range `[0,
-            config.n_positions - 1]`.
-
-            [What are position IDs?](../glossary#position-ids)
-        past_key_values (`Cache` or `tuple(tuple(torch.FloatTensor))`, *optional*):
-            Pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
-            blocks) that can be used to speed up sequential decoding. This typically consists in the `past_key_values`
-            returned by the model at a previous stage of decoding, when `use_cache=True` or `config.use_cache=True`.
-
-            Two formats are allowed:
-            - a [`~cache_utils.Cache`] instance, see our
-            [kv cache guide](https://huggingface.co/docs/transformers/en/kv_cache);
-            - Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of
-            shape `(batch_size, num_heads, sequence_length, embed_size_per_head)`). This is also known as the legacy
-            cache format.
-
-            The model will output the same cache format that is fed as input. If no `past_key_values` are passed, the
-            legacy cache format will be returned.
-
-            If `past_key_values` are used, the user can optionally input only the last `input_ids` (those that don't
-            have their past key value states given to this model) of shape `(batch_size, 1)` instead of all `input_ids`
-            of shape `(batch_size, sequence_length)`.
-        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
-            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation. This
-            is useful if you want more control over how to convert `input_ids` indices into associated vectors than the
-            model's internal embedding lookup matrix.
-        use_cache (`bool`, *optional*):
-            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
-            `past_key_values`).
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-            Indices depicting the position of the input sequence tokens in the sequence. Contrarily to `position_ids`,
-            this tensor is not affected by padding. It is used to update the cache in the correct position and to infer
-            the complete sequence length.
-"""
-
-
-@add_start_docstrings(
-    "The bare Qwen2 Model outputting raw hidden-states without any specific head on top.",
-    QWEN2_START_DOCSTRING,
-)
 class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`Qwen2DecoderLayer`]
@@ -590,7 +435,6 @@ class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    @add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -603,8 +447,12 @@ class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        # **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[Tuple, BaseModelOutputWithPastAndSeer]:
+        
+        if attention_mask is not None:
+            if not (attention_mask == 0).any().item():
+                attention_mask = None
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -636,12 +484,9 @@ class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = self._update_causal_mask(
-            attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
-        )
-
         block_attention_mask = self._seerattn_update_causal_mask(
-            inputs_embeds, causal_mask, 
+            attention_mask,
+            inputs_embeds,
         )
 
         hidden_states = inputs_embeds
@@ -672,7 +517,7 @@ class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
-                    causal_mask,
+                    attention_mask,
                     position_ids,
                     past_key_values,
                     output_attentions,
@@ -685,7 +530,7 @@ class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
-                    attention_mask=causal_mask,
+                    attention_mask=attention_mask,
                     position_ids=position_ids,
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
@@ -694,7 +539,6 @@ class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
                     position_embeddings=position_embeddings,
                     block_position_embeddings=block_position_embeddings,
                     block_attention_mask=block_attention_mask,
-                    # **flash_attn_kwargs,
                 )
 
             hidden_states = layer_outputs[0]
@@ -724,191 +568,62 @@ class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
         )
         return output if return_dict else output.to_tuple()
 
-    def _update_causal_mask(
-        self,
-        attention_mask: torch.Tensor,
-        input_tensor: torch.Tensor,
-        cache_position: torch.Tensor,
-        past_key_values: Cache,
-        output_attentions: bool,
-    ):
-        if self.config._attn_implementation == "flash_attention_2":
-            if attention_mask is not None and past_key_values is not None:
-                is_padding_right = attention_mask[:, -1].sum().item() != input_tensor.size()[0]
-                if is_padding_right:
-                    raise ValueError(
-                        "You are attempting to perform batched generation with padding_side='right'"
-                        " this may lead to unexpected behaviour for Flash Attention version of Qwen2. Make sure to "
-                        " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
-                    )
-            if attention_mask is not None and 0.0 in attention_mask:
-                return attention_mask
-            return None
-
-        # For SDPA, when possible, we will rely on its `is_causal` argument instead of its `attn_mask` argument, in
-        # order to dispatch on Flash Attention 2. This feature is not compatible with static cache, as SDPA will fail
-        # to infer the attention mask.
-        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-        using_static_cache = isinstance(past_key_values, StaticCache)
-        using_sliding_window_cache = isinstance(past_key_values, SlidingWindowCache)
-
-        # When output attentions is True, sdpa implementation's forward method calls the eager implementation's forward
-        if (
-            self.config._attn_implementation == "sdpa"
-            and not (using_static_cache or using_sliding_window_cache)
-            and not output_attentions
-        ):
-            if AttentionMaskConverter._ignore_causal_mask_sdpa(
-                attention_mask,
-                inputs_embeds=input_tensor,
-                past_key_values_length=past_seen_tokens,
-                sliding_window=self.config.sliding_window,
-                is_training=self.training,
-            ):
-                return None
-
-        dtype, device = input_tensor.dtype, input_tensor.device
-        min_dtype = torch.finfo(dtype).min
-        sequence_length = input_tensor.shape[1]
-        # SlidingWindowCache or StaticCache
-        if using_sliding_window_cache or using_static_cache:
-            target_length = past_key_values.get_max_cache_shape()
-        # DynamicCache or no cache
-        else:
-            target_length = (
-                attention_mask.shape[-1]
-                if isinstance(attention_mask, torch.Tensor)
-                else past_seen_tokens + sequence_length + 1
-            )
-
-        # In case the provided `attention` mask is 2D, we generate a causal mask here (4D).
-        causal_mask = self._prepare_4d_causal_attention_mask_with_cache_position(
-            attention_mask,
-            sequence_length=sequence_length,
-            target_length=target_length,
-            dtype=dtype,
-            device=device,
-            cache_position=cache_position,
-            batch_size=input_tensor.shape[0],
-            config=self.config,
-            past_key_values=past_key_values,
-        )
-
-        if (
-            self.config._attn_implementation == "sdpa"
-            and attention_mask is not None
-            and attention_mask.device.type in ["cuda", "xpu"]
-            and not output_attentions
-        ):
-            # Attend to all tokens in fully masked rows in the causal_mask, for example the relevant first rows when
-            # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
-            # Details: https://github.com/pytorch/pytorch/issues/110213
-            causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
-
-        return causal_mask
-
-
     def _seerattn_update_causal_mask(
         self,
-        input_tensor: torch.Tensor,
         attention_mask: torch.Tensor,
-    ):
-        """
-            Currently our kernel only supports causal masking, which does not cover the cases when batching inputs with attention masks.
-        """
+        inputs_embeds: torch.Tensor,
+    ):  
 
-        def gen_attn_mask(seq_len):
-            attention_mask = torch.full((seq_len, seq_len), -1e20)
-            attention_mask = torch.triu(attention_mask, diagonal=1)
-            return attention_mask
-
-        def gen_attn_mask_bool(seq_len):
-            attention_mask = torch.full((seq_len, seq_len), True, dtype=torch.bool)
-            attention_mask.triu_(diagonal=1)
-            attention_mask.bitwise_not_()
-            return attention_mask
-
-        downsample_len = math.ceil(input_tensor.shape[1] / self.config.seerattn_gate_block_size)
+        batch_size, seqlen = inputs_embeds.shape[:2]
+        if seqlen == 1:
+            return None
+        
+        block_size = self.config.seerattn_gate_block_size
+        dtype = inputs_embeds.dtype
+        device = inputs_embeds.device
         if attention_mask is not None:
-            gate_mask = torch.nn.functional.max_pool2d(attention_mask, (self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), stride=(self.config.seerattn_gate_block_size, self.config.seerattn_gate_block_size), ceil_mode=True)
-            if gate_mask.shape[-1] > downsample_len:
-                gate_mask = gate_mask[:, :, :downsample_len, :downsample_len]
-        else:
-            gate_mask = gen_attn_mask(downsample_len).to(device=input_tensor.device)
-        return gate_mask
+            pad_length = seqlen - torch.sum(attention_mask, dim=-1)
+            pad_blocks = torch.floor(pad_length / block_size)  # Shape: [batch_size]
 
-    @staticmethod
-    def _prepare_4d_causal_attention_mask_with_cache_position(
-        attention_mask: torch.Tensor,
-        sequence_length: int,
-        target_length: int,
-        dtype: torch.dtype,
-        device: torch.device,
-        cache_position: torch.Tensor,
-        batch_size: int,
-        config: SeerAttnQwen2Config,
-        past_key_values: Cache,
-    ):
-        """
-        Creates a causal 4D mask of shape `(batch_size, 1, query_length, key_value_length)` from a 2D mask of shape
-        `(batch_size, key_value_length)`, or if the input `attention_mask` is already 4D, do nothing.
+            min_dtype = torch.finfo(dtype).min
+            number_of_blocks = math.ceil(seqlen / block_size)
+            gate_mask = torch.triu(
+                torch.full((number_of_blocks, number_of_blocks), min_dtype, dtype=dtype, device=device),
+                diagonal=1
+            )
+            # Expand to shape [batch_size, 1, number_of_blocks, number_of_blocks]
+            gate_mask = gate_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, number_of_blocks, number_of_blocks)
 
-        Args:
-            attention_mask (`torch.Tensor`):
-                A 2D attention mask of shape `(batch_size, key_value_length)` or a 4D attention mask of shape `(batch_size, 1, query_length, key_value_length)`.
-            sequence_length (`int`):
-                The sequence length being processed.
-            target_length (`int`):
-                The target length: when generating with static cache, the mask should be as long as the static cache, to account for the 0 padding, the part of the cache that is not filled yet.
-            dtype (`torch.dtype`):
-                The dtype to use for the 4D attention mask.
-            device (`torch.device`):
-                The device to plcae the 4D attention mask on.
-            cache_position (`torch.Tensor`):
-                Indices depicting the position of the input sequence tokens in the sequence.
-            batch_size (`torch.Tensor`):
-                Batch size.
-            config (`Qwen2Config`):
-                The model's configuration class
-            past_key_values (`Cache`):
-                The cache class that is being used currently to generate
-        """
-        if attention_mask is not None and attention_mask.dim() == 4:
-            # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
-            causal_mask = attention_mask
+            # Create block indices along block dimension
+            block_indices = torch.arange(number_of_blocks, device=device)  # Shape [number_of_blocks]
+
+            # Create masks for query (rows) and key (columns) per batch
+            # pad_blocks has shape [batch_size]. Convert to int64.
+            pad_blocks_int = pad_blocks.to(torch.int64)
+
+            # For the query side: For each batch, block index < pad_blocks[i] should be masked.
+            query_mask = block_indices.unsqueeze(0) < pad_blocks_int.unsqueeze(1)  # shape: [batch_size, number_of_blocks]
+            # For the key side, the same logic applies.
+            key_mask = query_mask.clone()  # shape: [batch_size, number_of_blocks]
+
+            # Expand to match gate_mask dimensions.
+            # For queries: shape [batch_size, 1, number_of_blocks, 1]
+            query_mask = query_mask.unsqueeze(1).unsqueeze(-1)
+            # For keys: shape [batch_size, 1, 1, number_of_blocks]
+            key_mask = key_mask.unsqueeze(1).unsqueeze(2)
+
+            # Combine the masks: positions where either the query or the key block is padded.
+            combined_mask = query_mask.logical_or(key_mask)
+
+            # Set these positions in gate_mask to min_dtype.
+            gate_mask = gate_mask.masked_fill(combined_mask, min_dtype)
         else:
             min_dtype = torch.finfo(dtype).min
-            causal_mask = torch.full(
-                (sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device
-            )
-            diagonal_attend_mask = torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
-            if config.sliding_window is not None:
-                # if we have sliding window, we should not attend to tokens beyond sliding window length, so we mask them out also
-                # the check is needed to verify is current checkpoint was trained with sliding window or not
-                if not isinstance(past_key_values, SlidingWindowCache) or sequence_length > target_length:
-                    sliding_attend_mask = torch.arange(target_length, device=device) <= (
-                        cache_position.reshape(-1, 1) - config.sliding_window
-                    )
-                    diagonal_attend_mask.bitwise_or_(sliding_attend_mask)
-            causal_mask *= diagonal_attend_mask
-            causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
-            if attention_mask is not None:
-                causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
-                if attention_mask.shape[-1] > target_length:
-                    attention_mask = attention_mask[:, :target_length]
-                mask_length = attention_mask.shape[-1]
-                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :].to(
-                    causal_mask.device
-                )
-                padding_mask = padding_mask == 0
-                causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                    padding_mask, min_dtype
-                )
-        return causal_mask
+            number_of_blocks = math.ceil(seqlen / block_size)
+            gate_mask = torch.triu(torch.full((number_of_blocks, number_of_blocks), min_dtype, dtype=dtype, device=device), diagonal=1)
+            gate_mask = gate_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, number_of_blocks, number_of_blocks)
 
-
-# class KwargsForCausalLM(FlashAttentionKwargs, LossKwargs): ...
-
+        return gate_mask
 
 class SeerAttnQwen2ForCausalLM(SeerAttnQwen2PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
@@ -943,7 +658,6 @@ class SeerAttnQwen2ForCausalLM(SeerAttnQwen2PreTrainedModel, GenerationMixin):
         return self.model
 
     @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-    @add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
@@ -958,7 +672,7 @@ class SeerAttnQwen2ForCausalLM(SeerAttnQwen2PreTrainedModel, GenerationMixin):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
+        logits_to_keep: Union[int, torch.Tensor] = 1,
         **kwargs,
         # **kwargs: Unpack[KwargsForCausalLM],
     ) -> Union[Tuple, CausalLMOutputWithPastAndSeer]:
@@ -975,6 +689,7 @@ class SeerAttnQwen2ForCausalLM(SeerAttnQwen2PreTrainedModel, GenerationMixin):
                 token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
                 If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
                 This is useful when using packed tensor format (single dimension for batch and sequence length).
+                hacky change: default to 1
 
         Returns:
 
@@ -994,8 +709,6 @@ class SeerAttnQwen2ForCausalLM(SeerAttnQwen2PreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        if attention_mask!= None and torch.any(attention_mask == False):
-            raise ValueError("Batched inference with Attention mask not supported yet")
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
