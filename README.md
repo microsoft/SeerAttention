@@ -115,7 +115,7 @@ If first compute the intermediate attn-map (softmax(Q*K)) and then perform 2D ma
 
 ```python
 ### simple pseudo codo for self-distillation AttnGate training
-from seer_attn.attn_pooling_kernel import attn_with_pooling
+from seer_attn.kernels.attn_pooling_kernel import attn_with_pooling
 
 predict_mask = attn_gate(...)
 

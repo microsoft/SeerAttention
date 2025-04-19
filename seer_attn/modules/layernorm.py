@@ -142,8 +142,8 @@ def _layer_norm_fwd(
         assert residual_out.stride(-1) == 1
     else:
         residual_out = None
-    mean = torch.empty((M,), dtype=torch.float32, device="cuda") if not is_rms_norm else None
-    rstd = torch.empty((M,), dtype=torch.float32, device="cuda")
+    mean = torch.empty((M,), dtype=torch.float32, device=x.device) if not is_rms_norm else None
+    rstd = torch.empty((M,), dtype=torch.float32, device=x.device)
     # Less than 64KB per feature: enqueue fused kernel
     MAX_FUSED_SIZE = 65536 // x.element_size()
     BLOCK_N = min(MAX_FUSED_SIZE, triton.next_power_of_2(N))
@@ -151,8 +151,9 @@ def _layer_norm_fwd(
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
     # heuristics for number of warps
 
-    grid = (M,)
+    
     with torch.cuda.device(x.device.index):
+        grid = (M,)
         _layer_norm_fwd_1pass_kernel[grid](
             x,
             y,

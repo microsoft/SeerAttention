@@ -158,27 +158,27 @@ def train():
     )
 
     original_vocab_size = config.vocab_size
-    config.base_model = model_args.base_model
-    config.seerattn_gate_type = model_args.seerattn_gate_type
-    config.seerattn_gate_block_size = model_args.seerattn_gate_block_size
-    config.seerattn_gate_hidden_size = model_args.seerattn_gate_hidden_size
-    config.seerattn_gate_force_double = model_args.seerattn_gate_force_double
-
 
     if "llama" in model_args.model_name_or_path.lower():
         model = SeerAttnLlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             load_gate=False,
-            config=config,
+            seerattn_gate_type = model_args.seerattn_gate_type,
+            seerattn_gate_hidden_size = model_args.seerattn_gate_hidden_size,
+            seerattn_gate_force_double = model_args.seerattn_gate_force_double,
             torch_dtype=torch.bfloat16,
         )
+        model.config.base_model = model_args.base_model
     elif "qwen" in model_args.model_name_or_path.lower():
         model = SeerAttnQwen2ForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             load_gate=False,
-            config=config,
+            seerattn_gate_type = model_args.seerattn_gate_type,
+            seerattn_gate_hidden_size = model_args.seerattn_gate_hidden_size,
+            seerattn_gate_force_double = model_args.seerattn_gate_force_double,
             torch_dtype=torch.bfloat16,
         )
+        model.config.base_model = model_args.base_model
     
     print("Using AttnGate type:", model_args.seerattn_gate_type)
 
