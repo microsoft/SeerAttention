@@ -266,4 +266,4 @@ def generate_combinations():
 
 
 ATTNGATE_CLASSES = generate_combinations()
-print(ATTNGATE_CLASSES)
+# print(ATTNGATE_CLASSES)

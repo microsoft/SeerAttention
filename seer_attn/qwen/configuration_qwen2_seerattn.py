@@ -157,6 +157,8 @@ class SeerAttnQwen2Config(PretrainedConfig):
         max_position_embeddings=32768,
         initializer_range=0.02,
         rms_norm_eps=1e-6,
+        use_flash_rope=True,
+        fused_norm=True,
         use_cache=True,
         tie_word_embeddings=False,
         rope_theta=10000.0,
@@ -197,7 +199,8 @@ class SeerAttnQwen2Config(PretrainedConfig):
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
         self.attention_dropout = attention_dropout
-        
+        self.use_flash_rope = use_flash_rope
+        self.fused_norm = fused_norm
         
         self.seerattn_sparsity_method = seerattn_sparsity_method
         self.seerattn_threshold = seerattn_threshold
