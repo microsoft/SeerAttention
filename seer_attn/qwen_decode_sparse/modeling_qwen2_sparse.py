@@ -206,12 +206,12 @@ class Qwen2SeerAttention(nn.Module):
                 threshold=self.config.seerattn_threshold,
             )
 
-        activate_and_orginal_block_count = None
-        if self.config.seerattn_output_spasity and q_len == 1:
+        activate_and_original_block_count = None
+        if self.config.seerattn_output_sparsity and q_len == 1:
             activate_block_count = block_sparse_mask.sum()   # block_sparse_mask in shape batch, kv_heads, seq(block)
             original_block_count = block_attention_mask.sum() * self.config.num_key_value_heads # block_attention_mask in shape batch, 1, seq(block)
-            activate_and_orginal_block_count = (activate_block_count, original_block_count)
-            #print(f"activate_and_orginal_block_count: {activate_and_orginal_block_count}")
+            activate_and_original_block_count = (activate_block_count, original_block_count)
+            #print(f"activate_and_original_block_count: {activate_and_original_block_count}")
             
         attn_output = sparse_flash_attention_forward(
             q,
@@ -229,7 +229,7 @@ class Qwen2SeerAttention(nn.Module):
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
 
-        return attn_output, activate_and_orginal_block_count
+        return attn_output, activate_and_original_block_count
 
 
 class Qwen2RMSNorm(nn.Module):
@@ -292,7 +292,7 @@ class Qwen2DecoderLayer(nn.Module):
 
         # Self Attention
 
-        hidden_states, activate_and_orginal_block_count = self.self_attn(
+        hidden_states, activate_and_original_block_count = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             past_key_value=past_key_value,
@@ -313,7 +313,7 @@ class Qwen2DecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,activate_and_orginal_block_count) 
+        outputs = (hidden_states,activate_and_original_block_count) 
         return outputs
 
 
@@ -498,7 +498,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
-        all_activate_and_orginal_block_count = () if self.config.seerattn_output_spasity else None
+        all_activate_and_original_block_count = () if self.config.seerattn_output_sparsity else None
 
         for decoder_layer in self.layers:
             if output_hidden_states:
@@ -517,8 +517,8 @@ class Qwen2Model(Qwen2PreTrainedModel):
 
             hidden_states = layer_outputs[0]
 
-            if self.config.seerattn_output_spasity and layer_outputs[1] is not None:
-                all_activate_and_orginal_block_count += (layer_outputs[1],)
+            if self.config.seerattn_output_sparsity and layer_outputs[1] is not None:
+                all_activate_and_original_block_count += (layer_outputs[1],)
 
         hidden_states = self.norm(hidden_states)
 
@@ -530,7 +530,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
             past_key_values=past_key_values if use_cache else None,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
-            sparsitys_info=all_activate_and_orginal_block_count,
+            sparsitys_info=all_activate_and_original_block_count,
             k_compressed_cache=k_compressed_cache if use_cache else None,
         )
 
