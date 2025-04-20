@@ -142,7 +142,7 @@ class AttnGate(nn.Module):
             layer_idx,
             k_compressed_cache,
             q=None, #[b, 1, q_head, head_dim]
-            attention_mask=None, # [b, 1, 1, klen]
+            attention_mask=None, # [b, 1, klen]
             max_cache_len=None,
             position_embeddings=None,
             block_position_embeddings=None, 

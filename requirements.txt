@@ -10,3 +10,4 @@ huggingface_hub
 sentencepiece
 protobuf
 tabulate
+flash-attn 

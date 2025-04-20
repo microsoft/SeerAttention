@@ -13,6 +13,7 @@ class BaseModelOutputWithPastAndCache(ModelOutput):
     past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
     attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    sparsitys_info: Optional[Tuple[Tuple[int, int], ...]] = None
     k_compressed_cache: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
 
 
@@ -23,6 +24,7 @@ class CausalLMOutputWithPastAndCache(ModelOutput):
     past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
     attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    sparsitys_info: Optional[Tuple[Tuple[int, int], ...]] = None
     k_compressed_cache: Optional[Tuple[torch.FloatTensor, ...]] = None
 
 
