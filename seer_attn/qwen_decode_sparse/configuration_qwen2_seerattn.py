@@ -179,7 +179,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         seerattn_prefill=False,
         seerattn_decode=True,
         seerattn_use_oracle_sparse=False,
-        seerattn_output_spasity=True,
+        seerattn_output_sparsity=True,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -224,7 +224,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         self.seerattn_prefill = seerattn_prefill
         self.seerattn_decode = seerattn_decode
         self.seerattn_use_oracle_sparse = seerattn_use_oracle_sparse
-        self.seerattn_output_spasity = seerattn_output_spasity
+        self.seerattn_output_sparsity = seerattn_output_sparsity
         
         assert self.seerattn_sparsity_method in ['threshold', 'nz_ratio']
         assert self.seerattn_gate_hidden_size in [64, 128, 256]
