@@ -1,6 +1,6 @@
 task=aime
 bs=30
-threshold=1e-2
+threshold=1e-4
 block_size=32
 
 ## Dense Baseline
@@ -15,4 +15,4 @@ CUDA_VISIBLE_DEVICES=7 python eval.py \
     --threshold $threshold \
     --block_size $block_size \
     --use_batch_exist \
-    --surround_with_messages 
+    --surround_with_messages
