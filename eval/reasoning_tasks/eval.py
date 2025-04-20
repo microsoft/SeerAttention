@@ -46,7 +46,6 @@ def calculate_overall_sparsity(
     total_activate_count = 0
     total_original_count = 0
     # Iterate through each batch in the input list
-    print(all_batch_sparsitys_info.shape)
     for each_batch_sequence_info in all_batch_sparsitys_info:
         for each_step_sparsitys_info in each_batch_sequence_info:
             print(each_step_sparsitys_info)
