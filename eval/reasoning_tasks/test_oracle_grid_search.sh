@@ -4,15 +4,17 @@
 task="aime"
 bs=30
 model_dir="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-base_output_dir="./results_oracle_aime_grid_search_multi_run" # Base directory for results
-num_runs=8 # Number of times to run each block size configuration
+base_output_dir="./results_oracle_aime_grid_search" # Base directory for results
+num_runs=1 # Number of times to run each block size configuration
 
 # Parameters to iterate over
 #thresholds=(0.0001 0.0005 0.001 0.005)
 thresholds=(0.0001)
-block_sizes=(16 32 64 128)
-gpus=(4 5 6 7) # Corresponding GPU IDs (ensure length matches block_sizes)
 
+#block_sizes=(16 32 64 128)
+#gpus=(4 5 6 7) # Corresponding GPU IDs (ensure length matches block_sizes)
+block_sizes=(64)
+gpus=(4)
 # --- Ensure base output directory exists ---
 mkdir -p "$base_output_dir"
 

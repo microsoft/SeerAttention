@@ -46,9 +46,10 @@ def calculate_overall_sparsity(
     total_activate_count = 0
     total_original_count = 0
     # Iterate through each batch in the input list
+    # print(all_batch_sparsitys_info)
     for each_batch_sequence_info in all_batch_sparsitys_info:
         for each_step_sparsitys_info in each_batch_sequence_info:
-            print(each_step_sparsitys_info)
+            #print(each_step_sparsitys_info)
             for each_layer_sparsitys_info in each_step_sparsitys_info:
                 total_activate_count += each_layer_sparsitys_info[0]
                 total_original_count += each_layer_sparsitys_info[1]
@@ -59,7 +60,7 @@ def calculate_overall_sparsity(
         overall_sparsity_ratio = 0.0
     else:
         # Calculate the overall ratio
-        overall_sparsity_ratio = total_activate_count / total_original_count
+        overall_sparsity_ratio = 1 - total_activate_count / total_original_count
 
     # Return all three calculated values
     return total_activate_count, total_original_count, overall_sparsity_ratio
@@ -299,7 +300,7 @@ def infer(args):
         
         print("get output in batch: ", i, flush=True)
         
-        all_batch_sparsitys_info += batch_sparsitys_info
+        all_batch_sparsitys_info.append(batch_sparsitys_info)
 
         for j in range(len(outputs)):
             output_seq = outputs[j]

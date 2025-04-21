@@ -685,7 +685,7 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
 
             if outputs.sparsitys_info is not None and outputs.sparsitys_info:
                 #dense prefill, step 0 is empty
-                sparsitys_info_list += outputs.sparsitys_info
+                sparsitys_info_list.append(outputs.sparsitys_info)
 
             if do_sample:
                 logits /= generation_config.temperature
