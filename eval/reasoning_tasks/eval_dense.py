@@ -18,7 +18,7 @@ from Utils.math_normalization import *
 from Utils.grader import *
 import pickle
 from math import comb
-from seer_attn import SeerDecodingQwen2ForCausalLM
+from seer_attn import SeerDecodingQwen2ForCausalLM, SeerDecodingQwen2ForCausalLM_Dense
 from generation_utils import batch_exist_generate
 
 def calculate_average_percentage(sparsitys):
@@ -67,8 +67,7 @@ def parse_args():
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--rank", default=0, type=int)
     parser.add_argument("--attention_implementation", default="ours", choices=["ours", "fa2"], type=str)
-    parser.add_argument("--use_batch_exist", default=True, type=bool)
-    parser.add_argument("--use_dense_kernel", default=True, type=bool)
+    parser.add_argument("--use_batch_exist", default=1, type=int)
     parser.add_argument('--repeat', type=int, default=1, help="repeat")
     parser.add_argument("--gate_hidden_size", default=128, type=int)
     parser.add_argument("--q_head_pooling_type", default="Qproj", type=str)
@@ -164,23 +163,13 @@ def infer(args):
 
 
     if args.attention_implementation == "ours":
-        if args.use_dense_kernel:
-            model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
-                                                    torch_dtype=torch.bfloat16,
-                                                    device_map="auto",
-                                                    use_cache=True,
-                                                    fused_norm=True,
-                                                    seerattn_threshold=args.threshold,
-                                                    use_flash_rope=True,
-            )
-        else:
-            model = SeerDecodingQwen2ForCausalLM_Dense.from_pretrained(model_name_or_path,
-                                                    torch_dtype=torch.bfloat16,
-                                                    device_map="auto",
-                                                    use_cache=True,
-                                                    fused_norm=True,
-                                                    use_flash_rope=True,
-            )
+        model = SeerDecodingQwen2ForCausalLM_Dense.from_pretrained(model_name_or_path,
+                                                torch_dtype=torch.bfloat16,
+                                                device_map="auto",
+                                                use_cache=True,
+                                                fused_norm=True,
+                                                use_flash_rope=True,
+        )
     elif args.attention_implementation == "fa2":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
@@ -198,10 +187,7 @@ def infer(args):
     generate_lens = []
     sparsitys_all = []
     correct_cnt = 0
-    if args.attention_implementation == "fa2":
-        output_filename = f"{args.data_name}_bs{args.batch_size}_batchexist{args.use_batch_exist}_fa2_dense.txt"
-    else:
-        output_filename = f"{args.data_name}_bs{args.batch_size}_batchexist{args.use_batch_exist}_ours_densekernel{args.use_dense_kernel}_dense.txt"
+    output_filename = f"{args.data_name}_bs{args.batch_size}_batchexist{args.use_batch_exist}_{args.attention_implementation}_dense.txt"
     os.makedirs(args.output_dir, exist_ok=True)
     output_path_txt = os.path.join(args.output_dir, output_filename)
     # output_completions_path = os.path.join(args.output_dir, "completions.json")
@@ -228,22 +214,14 @@ def infer(args):
         # torch.backends.cudnn.deterministic = True
         # torch.backends.cudnn.benchmark = False
         print("args.use_batch_exist:",args.use_batch_exist)
-        if args.use_batch_exist:
-            if args.attention_implementation == "ours":
-                outputs = model.batch_exist_generate(
-                    input_ids=batch_input_ids,
-                    attention_mask=attention_mask,
-                    max_length = args.max_tokens,
-                    do_sample=True,
-                )
-            else:
-                outputs = batch_exist_generate(
-                    model,
-                    input_ids=batch_input_ids,
-                    attention_mask=attention_mask,
-                    max_length = args.max_tokens,
-                    do_sample=True,
-                )
+        if args.use_batch_exist == 1:
+            outputs = batch_exist_generate(
+                model,
+                input_ids=batch_input_ids,
+                attention_mask=attention_mask,
+                max_length = args.max_tokens,
+                do_sample=True,
+            )
 
         else:
             outputs = model.generate(

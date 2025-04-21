@@ -9,9 +9,8 @@ bs=4
 limit=4
 repeat=1
 
-use_batch_exist=False         
-attention_implementation=fa2 # fa2 ours
-use_dense_kernel=False
+use_batch_exist=1     
+attention_implementation=ours # fa2 ours
 
 
 CUDA_VISIBLE_DEVICES=0 python eval_dense.py \
@@ -23,5 +22,4 @@ CUDA_VISIBLE_DEVICES=0 python eval_dense.py \
     --output_dir $output_dir \
     --attention_implementation $attention_implementation \
     --use_batch_exist $use_batch_exist\
-    --use_dense_kernel $use_dense_kernel\
     --surround_with_messages 
