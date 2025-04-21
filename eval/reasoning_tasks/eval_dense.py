@@ -22,16 +22,16 @@ from seer_attn import SeerDecodingQwen2ForCausalLM
 from generation_utils import batch_exist_generate
 
 def calculate_average_percentage(sparsitys):
-    weighted_sum = 0
-    total_weight = 0
+    activate_block = 0
+    original_block = 0
 
 
-    for sparsity, length in sparsitys:
-        weighted_sum += sparsity * length
-        total_weight += length
+    for activate_block_count, original_block_count in sparsitys:
+        activate_block += activate_block_count
+        original_block += original_block_count
             
     # average_percentage_weighted = weighted_sum / total_weight
-    return weighted_sum, total_weight
+    return activate_block, original_block
 
 def parse_list(arg):
     return arg.split(',')
@@ -66,9 +66,13 @@ def parse_args():
     parser.add_argument("--dtype", default='auto', type=str)
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--rank", default=0, type=int)
-    parser.add_argument("--attention_implementation", default="ours", choices=["ours", "fa2", "sdpa"], type=str)
-    parser.add_argument("--use_batch_exist", action="store_true")
-    parser.add_argument("--use_fused_kernel", action="store_true")
+    parser.add_argument("--attention_implementation", default="ours", choices=["ours", "fa2"], type=str)
+    parser.add_argument("--use_batch_exist", default=True, type=bool)
+    parser.add_argument("--use_dense_kernel", default=True, type=bool)
+    parser.add_argument('--repeat', type=int, default=1, help="repeat")
+    parser.add_argument("--gate_hidden_size", default=128, type=int)
+    parser.add_argument("--q_head_pooling_type", default="Qproj", type=str)
+    parser.add_argument("--block_size", default=64, type=int)
     args = parser.parse_args()
     
     args.top_p = 1 if args.temperature == 0 else args.top_p # top_p must be 1 when using greedy 
@@ -109,6 +113,7 @@ def get_three_prompt(prompt_type, data_name):
 
 
 def infer(args):
+    print(args)
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
     generate_lens = []
@@ -124,24 +129,15 @@ def infer(args):
     limit = args.limit
     if limit > 0:
         examples = examples[:limit]
-    
+    examples = examples * args.repeat
 
-    if args.attention_implementation == "ours":
-        config = AutoConfig.from_pretrained(model_name_or_path)
-        base_model = config.base_model
-        tokenizer = AutoTokenizer.from_pretrained(
-            base_model,
-            trust_remote_code=True,
-            padding_side="left",
-            use_fast=True,
-        )
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name_or_path, 
-            trust_remote_code=True, 
-            padding_side="left",
-            use_fast=True,
-        )
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name_or_path, 
+        trust_remote_code=True, 
+        padding_side="left",
+        use_fast=True,
+    )
     prompt_batch = []
     for example in tqdm(examples, total=len(examples)):
         # parse question and answer
@@ -168,7 +164,7 @@ def infer(args):
 
 
     if args.attention_implementation == "ours":
-        if args.use_fused_kernel:
+        if args.use_dense_kernel:
             model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
                                                     device_map="auto",
@@ -178,11 +174,13 @@ def infer(args):
                                                     use_flash_rope=True,
             )
         else:
-            model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
+            model = SeerDecodingQwen2ForCausalLM_Dense.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
                                                     device_map="auto",
-                                                    seerattn_threshold=args.threshold,
-                                                    use_cache=True,)
+                                                    use_cache=True,
+                                                    fused_norm=True,
+                                                    use_flash_rope=True,
+            )
     elif args.attention_implementation == "fa2":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
@@ -190,42 +188,46 @@ def infer(args):
                                                     use_cache=True,
                                                     attn_implementation="flash_attention_2",
                                                     trust_remote_code=True)
-    elif args.attention_implementation == "sdpa":
-        model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
-                                                    torch_dtype=torch.bfloat16,
-                                                    device_map="auto",
-                                                    use_cache=True,
-                                                    trust_remote_code=True)
     else:
         raise ValueError(f"Unknown attention implementation: {args.attention_implementation}")
     
     model.eval()
 
+    resume_i = 0
+    times = []
     generate_lens = []
+    sparsitys_all = []
     correct_cnt = 0
-    output_subdir = f"{args.data_name}_bs_{args.batch_size}_attn_{args.attention_implementation}_T{args.threshold}_batch_exist_{args.use_batch_exist}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    checkpoint_filename = f"ckpt.jsonl"
-    args.output_dir = os.path.join(args.output_dir, output_subdir) 
+    if args.attention_implementation == "fa2":
+        output_filename = f"{args.data_name}_bs{args.batch_size}_batchexist{args.use_batch_exist}_fa2_dense.txt"
+    else:
+        output_filename = f"{args.data_name}_bs{args.batch_size}_batchexist{args.use_batch_exist}_ours_densekernel{args.use_dense_kernel}_dense.txt"
     os.makedirs(args.output_dir, exist_ok=True)
-    output_path_txt = os.path.join(args.output_dir, "summary.txt")
-    output_completions_path = os.path.join(args.output_dir, "completions.json")
-    checkpoint_filename_json = os.path.join(args.output_dir, checkpoint_filename)
+    output_path_txt = os.path.join(args.output_dir, output_filename)
+    # output_completions_path = os.path.join(args.output_dir, "completions.json")
     completions = []
     batch_size = args.batch_size
 
-
+    # fixed_generator = torch.Generator(device="cuda").manual_seed(42)
     begin = time.time()
 
     for i in range(0, len(prompt_batch), batch_size):
         # Tokenize the prompt batch
-        print("start batch: ", i, flush=True)
+        print("start iteration: ", i, flush=True)
         batch_prompts = prompt_batch[i:i+batch_size]
         tokenized_prompts = tokenizer(batch_prompts, padding="longest", return_tensors="pt", add_special_tokens=True).to('cuda')
+        print("tokenize done: ", i, flush=True)
         batch_input_ids = tokenized_prompts.input_ids
         attention_mask = tokenized_prompts.attention_mask
+        # batch_input_ids = batch_input_ids.cuda()
+        # attention_mask = attention_mask.cuda()
 
-        print("start batch: ", i, flush=True)
+        print("start iteration: ", i, flush=True)
 
+        # transformers.set_seed(42)
+        # torch.backends.cudnn.deterministic = True
+        # torch.backends.cudnn.benchmark = False
+        print("args.use_batch_exist:",args.use_batch_exist)
         if args.use_batch_exist:
             if args.attention_implementation == "ours":
                 outputs = model.batch_exist_generate(
@@ -253,7 +255,7 @@ def infer(args):
             )
 
         
-        print("get output in batch: ", i, flush=True)
+        print("get output in iteration: ", i, flush=True)
         
         for j in range(len(outputs)):
             output_seq = outputs[j]
@@ -261,8 +263,9 @@ def infer(args):
             generate_lens.append(num_tokens - len(batch_input_ids[j]))
 
         batch_results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        print(batch_results)
         completions.extend(batch_results)
-        print("finish batch: ", i, flush=True)
+        print("finish iteration: ", i, flush=True)
 
 
 
@@ -280,8 +283,8 @@ def infer(args):
 
     
     print("llm generate done")
-    if os.path.exists(checkpoint_filename_json):
-        os.remove(checkpoint_filename_json)
+    # if os.path.exists(checkpoint_filename_json):
+    #     os.remove(checkpoint_filename_json)
 
     print("generate_lens: ", generate_lens)
     
@@ -300,25 +303,44 @@ def infer(args):
     average_time_per_token = total_time / sum(generate_lens)
     print(f"Total time: {total_time}s")
     print(f"Average time per token: {average_time_per_token}")
+
+    # # sparsity
+    # activate_block, original_block = calculate_average_percentage(sparsitys_all)
+    # # average_percentage_replaced_weighted = (weighted_sum + past_weighted_sum) / (total_weight + past_total_weight)
+    # average_percentage_replaced_weighted = (1 - activate_block / original_block) * 100
+    # print(f"Average percentage replaced weighted: {average_percentage_replaced_weighted}%")
     
     with open(output_path_txt, "a") as f:
         f.write(f"Acc: {correct_cnt / len(examples):.4f}\n")
         f.write(f"Average generate length: {average_generate_len}\n")
         f.write(f"Max generate length: {max_generate_len}\n")
-        f.write(f"Total time: {total_time/60:.2f}min\n")
+        f.write(f"Total time: {total_time/60:.2f}\n")
         f.write(f"Average time per token: {average_time_per_token}\n")
+        # f.write(f"Average percentage replaced weighted: {average_percentage_replaced_weighted}\n")
         f.write("\n")
 
     print("Results saved to ", output_path_txt)
 
 
-    # Save completions to json
-    with open(output_completions_path, "w") as f:
-        json.dump(completions, f)
-    
+    # # Save completions to json
+    # with open(output_completions_path, "w") as f:
+    #     json.dump(completions, f)
+
+# def set_rng_seed(seed):
+#     random.seed(seed) #为python设置随机种子
+#     np.random.seed(seed)  #为numpy设置随机种子
+#     torch.manual_seed(seed)   #为CPU设置随机种子
+#     torch.cuda.manual_seed(seed)   #为当前GPU设置随机种子
+#     os.environ['PYTHONHASHSEED'] = str(seed)
+#     torch.cuda.manual_seed_all(seed)   #为所有GPU设置随机种子
+#     torch.backends.cudnn.benchmark = False
+#     torch.backends.cudnn.deterministic = True
+#     torch.backends.cudnn.enabled = True
+#     # os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':16:8'
+#     # torch.use_deterministic_algorithms(True)
 
 if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     args = parse_args()
-    set_seed(args.seed)
+    # set_rng_seed(0)
     infer(args)
