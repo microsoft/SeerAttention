@@ -68,6 +68,7 @@ def parse_args():
     parser.add_argument("--rank", default=0, type=int)
     parser.add_argument("--attention_implementation", default="ours", choices=["ours", "fa2"], type=str)
     parser.add_argument("--use_batch_exist", default=1, type=int)
+    parser.add_argument("--use_sparse_kernel", default=0, type=int)
     parser.add_argument('--repeat', type=int, default=1, help="repeat")
     parser.add_argument("--gate_hidden_size", default=128, type=int)
     parser.add_argument("--q_head_pooling_type", default="Qproj", type=str)
@@ -131,12 +132,22 @@ def infer(args):
     examples = examples * args.repeat
 
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name_or_path, 
-        trust_remote_code=True, 
-        padding_side="left",
-        use_fast=True,
-    )
+    if args.use_sparse_kernel == 1:
+        config = AutoConfig.from_pretrained(model_name_or_path)
+        base_model = config.base_model
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model,
+            trust_remote_code=True,
+            padding_side="left",
+            use_fast=True,
+        )
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name_or_path, 
+            trust_remote_code=True, 
+            padding_side="left",
+            use_fast=True,
+        )
     prompt_batch = []
     for example in tqdm(examples, total=len(examples)):
         # parse question and answer
@@ -148,7 +159,7 @@ def infer(args):
         else:
             cur_prompt = question_format.format(question=question)
         if args.surround_with_messages:
-            if args.data_name in ["aime", "math"]:
+            if args.data_name in ["aime", "math", "olympiadbench"]:
                 messages = [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": cur_prompt}
@@ -163,13 +174,23 @@ def infer(args):
 
 
     if args.attention_implementation == "ours":
-        model = SeerDecodingQwen2ForCausalLM_Dense.from_pretrained(model_name_or_path,
+        if args.use_sparse_kernel == 1:
+            model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
+                                                    torch_dtype=torch.bfloat16,
+                                                    device_map="auto",
+                                                    use_cache=True,
+                                                    fused_norm=True,
+                                                    seerattn_threshold=0.0,
+                                                    use_flash_rope=True,
+            )
+        else:
+            model = SeerDecodingQwen2ForCausalLM_Dense.from_pretrained(model_name_or_path,
                                                 torch_dtype=torch.bfloat16,
                                                 device_map="auto",
                                                 use_cache=True,
                                                 fused_norm=True,
                                                 use_flash_rope=True,
-        )
+            )
     elif args.attention_implementation == "fa2":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
@@ -187,7 +208,10 @@ def infer(args):
     generate_lens = []
     sparsitys_all = []
     correct_cnt = 0
-    output_filename = f"{args.data_name}_bs{args.batch_size}_batchexist{args.use_batch_exist}_{args.attention_implementation}_dense.txt"
+    if args.use_sparse_kernel == 1:
+        output_filename = f"{args.data_name}_bs{args.batch_size}_batchexist{args.use_batch_exist}_{args.attention_implementation}_sparsekernel.txt"
+    else:
+        output_filename = f"{args.data_name}_bs{args.batch_size}_batchexist{args.use_batch_exist}_{args.attention_implementation}_densekernel.txt"
     os.makedirs(args.output_dir, exist_ok=True)
     output_path_txt = os.path.join(args.output_dir, output_filename)
     # output_completions_path = os.path.join(args.output_dir, "completions.json")
@@ -215,13 +239,22 @@ def infer(args):
         # torch.backends.cudnn.benchmark = False
         print("args.use_batch_exist:",args.use_batch_exist)
         if args.use_batch_exist == 1:
-            outputs = batch_exist_generate(
-                model,
-                input_ids=batch_input_ids,
-                attention_mask=attention_mask,
-                max_length = args.max_tokens,
-                do_sample=True,
-            )
+            if args.use_sparse_kernel == 1:
+                assert args.attention_implementation == "ours"
+                outputs = model.batch_exist_generate(
+                    input_ids=batch_input_ids,
+                    attention_mask=attention_mask,
+                    max_length = args.max_tokens,
+                    do_sample=True,
+                )
+            else:
+                outputs = batch_exist_generate(
+                    model,
+                    input_ids=batch_input_ids,
+                    attention_mask=attention_mask,
+                    max_length = args.max_tokens,
+                    do_sample=True,
+                )
 
         else:
             outputs = model.generate(
@@ -242,21 +275,33 @@ def infer(args):
 
         batch_results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
         print(batch_results)
-        completions.extend(batch_results)
+        # completions.extend(batch_results)
+
+        for j in range(i,min(i+batch_size,len(prompt_batch))):
+            d = examples[j]
+            gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
+            generated_responses = [batch_results[j-i]]
+            generated_answers = [extract_answer(generated_response, args.data_name) for generated_response in generated_responses]
+            is_correct_list = [check_is_correct(generated_answer, gt_ans) for generated_answer in generated_answers]
+            is_correct = any(is_correct_list)
+            if is_correct:
+                correct_cnt += 1
+
+                
         print("finish iteration: ", i, flush=True)
 
 
 
-    # check all the correct
-    for i in range(len(prompt_batch)):
-        d = examples[i]
-        gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
-        generated_responses = [completions[i]]
-        generated_answers = [extract_answer(generated_response, args.data_name) for generated_response in generated_responses]
-        is_correct_list = [check_is_correct(generated_answer, gt_ans) for generated_answer in generated_answers]
-        is_correct = any(is_correct_list)
-        if is_correct:
-            correct_cnt += 1
+    # # check all the correct
+    # for i in range(len(prompt_batch)):
+    #     d = examples[i]
+    #     gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
+    #     generated_responses = [completions[i]]
+    #     generated_answers = [extract_answer(generated_response, args.data_name) for generated_response in generated_responses]
+    #     is_correct_list = [check_is_correct(generated_answer, gt_ans) for generated_answer in generated_answers]
+    #     is_correct = any(is_correct_list)
+    #     if is_correct:
+    #         correct_cnt += 1
 
 
     
