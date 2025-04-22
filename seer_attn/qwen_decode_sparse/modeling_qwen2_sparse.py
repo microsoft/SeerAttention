@@ -65,6 +65,52 @@ class Qwen2MLP(nn.Module):
         return down_proj
 
 
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+    """
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+def compute_oracle_sparse_mask(q, k, attention_mask, block_size, threshold):
+    batch_size, q_len, num_q_heads, head_dim = q.shape
+    _, kv_len, num_kv_heads, _ = k.shape
+    num_gqa_groups = num_q_heads // num_kv_heads
+    
+    if q_len > 1: # use dense prefill for sparse decode
+        block_sparse_mask = None
+    else:
+        q = q.transpose(1, 2) # (b, num_q_heads, q_len, d)
+        k = k.transpose(1, 2) # (b, num_kv_heads, kv_len, d)
+
+        # Repeat K heads for GQA compatibility
+        if num_gqa_groups > 1:
+            k = repeat_kv(k, num_gqa_groups)
+
+        attn_weights = torch.einsum('bhid, bhdj -> bhij', q, k.transpose(-1, -2)) * (head_dim**-0.5) # (b, num_q_heads, q_len, kv_len)
+
+        #q_len=1, (b, num_q_heads, q_len, kv_len) -> (b, num_q_heads, kv_len), as block_sparse_mask must in bhs
+        attn_weights = attn_weights.squeeze(2)
+        
+        #from 2D to 3D, (b,kv_len) -> (b,1,kv_len)
+        attention_mask=attention_mask.unsqueeze(1)
+        # note attention_mask is in int/float, with 1 means True.
+        # our block attention_mask is in bool.
+        attn_weights = attn_weights.masked_fill(~attention_mask.bool(), float('-inf'))
+        
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
+
+        attn_weights = F.max_pool2d(attn_weights, kernel_size=(num_gqa_groups, block_size), stride=(num_gqa_groups, block_size), ceil_mode=True)
+
+        block_sparse_mask = attn_weights > threshold  
+    
+    return block_sparse_mask
+
+
 class Qwen2SeerAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -93,7 +139,6 @@ class Qwen2SeerAttention(nn.Module):
         )
 
         self.mask_loss_func = torch.nn.KLDivLoss()
-        self.profile_file = os.environ.get("PROFILE_FILE", None)
         self.use_flash_rope = config.use_flash_rope
 
     def forward(
@@ -138,21 +183,35 @@ class Qwen2SeerAttention(nn.Module):
             k = rearrange(k, '... (h d) -> ... h d', d=self.head_dim)
             v = rearrange(v, '... (h d) -> ... h d', d=self.head_dim)
 
+        if self.config.seerattn_use_oracle_sparse:
+            block_sparse_mask = compute_oracle_sparse_mask(
+                q,
+                k,
+                attention_mask,
+                self.config.seerattn_gate_block_size,
+                self.config.seerattn_threshold,
+            )
+        else:
+            max_cache_len = k.shape[1]
+            block_sparse_mask = self.attn_gate(
+                k_nope,
+                self.layer_idx,
+                k_compressed_cache,
+                q_nope,
+                block_attention_mask,
+                max_cache_len,
+                position_embeddings,
+                block_position_embeddings,
+                threshold=self.config.seerattn_threshold,
+            )
 
-        max_cache_len = k.shape[1]
-        attn_gate_mask = self.attn_gate(
-            k_nope,
-            self.layer_idx,
-            k_compressed_cache,
-            q_nope,
-            block_attention_mask,
-            max_cache_len,
-            position_embeddings,
-            block_position_embeddings,
-            threshold=self.config.seerattn_threshold,
-        )
-
-        
+        activate_and_original_block_count = None
+        if self.config.seerattn_output_sparsity and q_len == 1:
+            activate_block_count = block_sparse_mask.sum()   # block_sparse_mask in shape batch, kv_heads, seq(block)
+            original_block_count = block_attention_mask.sum() * self.config.num_key_value_heads # block_attention_mask in shape batch, 1, seq(block)
+            activate_and_original_block_count = (activate_block_count, original_block_count)
+            #print(f"activate_and_original_block_count: {activate_and_original_block_count}")
+            
         attn_output = sparse_flash_attention_forward(
             q,
             k,
@@ -161,7 +220,7 @@ class Qwen2SeerAttention(nn.Module):
             query_length=q_len,
             softmax_scale=self.scaling,
             cache_seqlens=cache_seqlens,
-            block_mask=attn_gate_mask,
+            block_mask=block_sparse_mask,
             block_size=self.config.seerattn_gate_block_size,
         )
         
@@ -169,7 +228,7 @@ class Qwen2SeerAttention(nn.Module):
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
 
-        return attn_output
+        return attn_output, activate_and_original_block_count
 
 
 class Qwen2RMSNorm(nn.Module):
@@ -232,7 +291,7 @@ class Qwen2DecoderLayer(nn.Module):
 
         # Self Attention
 
-        hidden_states = self.self_attn(
+        hidden_states, activate_and_original_block_count = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             past_key_value=past_key_value,
@@ -253,7 +312,7 @@ class Qwen2DecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,) 
+        outputs = (hidden_states,activate_and_original_block_count) 
         return outputs
 
 
@@ -431,16 +490,15 @@ class Qwen2Model(Qwen2PreTrainedModel):
         block_position_ids = position_ids[:, 0::self.config.seerattn_gate_block_size] ## downsampled position ids
         block_position_embeddings = self.block_rotary_emb(hidden_states, block_position_ids) # downsampled position embeddings
         
-        block_mask = self._gen_block_mask(
+        block_attention_mask = self._gen_block_attention_mask(
             attention_mask
         )
 
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
+        all_activate_and_original_block_count = () if self.config.seerattn_output_sparsity else None
 
-
-        
         for decoder_layer in self.layers:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -453,10 +511,13 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
                 block_position_embeddings=block_position_embeddings,
-                block_attention_mask=block_mask,
+                block_attention_mask=block_attention_mask,
             )
 
             hidden_states = layer_outputs[0]
+
+            if self.config.seerattn_output_sparsity and layer_outputs[1] is not None:
+                all_activate_and_original_block_count += (layer_outputs[1],)
 
         hidden_states = self.norm(hidden_states)
 
@@ -468,10 +529,11 @@ class Qwen2Model(Qwen2PreTrainedModel):
             past_key_values=past_key_values if use_cache else None,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
+            sparsitys_info=all_activate_and_original_block_count,
             k_compressed_cache=k_compressed_cache if use_cache else None,
         )
 
-    def _gen_block_mask(
+    def _gen_block_attention_mask(
         self,
         attention_mask,
     ):
@@ -570,6 +632,7 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            sparsitys_info=outputs.sparsitys_info,
             k_compressed_cache=outputs.k_compressed_cache,
         )
 
@@ -602,6 +665,7 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         if do_sample:
             top_p_warper = TopPLogitsWarper(top_p=generation_config.top_p, min_tokens_to_keep=1)
 
+        sparsitys_info_list = []
         for step in range(max_length - generated.shape[1]):
             # Forward pass: get next token logits and updated past_key_values
             with torch.no_grad():
@@ -617,6 +681,10 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
 
             logits = outputs.logits[:, -1, :].clone().float()
             logits = logits.to(input_ids.device)
+
+            if outputs.sparsitys_info is not None and outputs.sparsitys_info:
+                #dense prefill, step 0 is empty
+                sparsitys_info_list.append(outputs.sparsitys_info)
 
             if do_sample:
                 logits /= generation_config.temperature
@@ -653,9 +721,10 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
             if active_local.sum().item() < cur_to_orig.shape[0]:
                 active_indices_local = torch.nonzero(active_local, as_tuple=False).squeeze(-1)
                 # Update the kv cache using indices relative to the current cache.
-                # print("active_indices_local", active_indices_local, "kvlen:", attention_mask.shape[1], flush=True)
+                print("active_indices_local", active_indices_local, "kvlen:", attention_mask.shape[1], flush=True)
                 current_kvcache.batch_select_indices(active_indices_local)
-                current_kcompressed_cache.batch_select_indices(active_indices_local)
+                if not self.config.seerattn_use_oracle_sparse:
+                    current_kcompressed_cache.batch_select_indices(active_indices_local)
                 torch.cuda.empty_cache()
                 if attention_mask is not None:
                     attention_mask = attention_mask[active_indices_local]
@@ -666,7 +735,7 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
             cur_input = generated[cur_to_orig, -1:].clone()
 
         # Pad finished sequences back to original batch size if needed
-        return generated
+        return generated, sparsitys_info_list
 
 
     @classmethod

@@ -9,11 +9,13 @@ CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python e
     --batch_size $bs \
     --limit -1 \
     --output_dir ./results_sparse_aime \
-    --attention_implementation ours \
+    --attention_implementation seer_sparse \
     --threshold $threshold \
     --use_batch_exist \
     --use_fused_kernel \
+    --profile_sparsity \
     --surround_with_messages 
+
 
 
 ## Dense Baseline
