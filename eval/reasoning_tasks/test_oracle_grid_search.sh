@@ -71,6 +71,7 @@ for threshold in "${thresholds[@]}"; do
                     --threshold "$threshold" \
                     --block_size "$current_block_size" \
                     --use_batch_exist \
+                    --profile_sparsity \
                     --surround_with_messages > "$output_dir/run.log" 2>&1 # Redirect stdout/stderr
 
                 # Optional: Check exit status of the python command

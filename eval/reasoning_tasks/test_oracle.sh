@@ -15,4 +15,5 @@ CUDA_VISIBLE_DEVICES=3 python eval.py \
     --threshold $threshold \
     --block_size $block_size \
     --use_batch_exist \
+    --profile_sparsity \
     --surround_with_messages

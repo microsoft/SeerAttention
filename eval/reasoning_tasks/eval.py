@@ -103,6 +103,7 @@ def parse_args():
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "oracle_sparse", "fa2", "sdpa"], type=str)
     parser.add_argument("--use_batch_exist", action="store_true")
     parser.add_argument("--use_fused_kernel", action="store_true")
+    parser.add_argument("--profile_sparsity", action="store_true")
     args = parser.parse_args()
     
     args.top_p = 1 if args.temperature == 0 else args.top_p # top_p must be 1 when using greedy 
@@ -159,6 +160,8 @@ def infer(args):
     if limit > 0:
         examples = examples[:limit]
     
+    if args.profile_sparsity:
+        assert args.attention_implementation in ["seer_sparse", "oracle_sparse"], "profile_sparsity only support seer_sparse and oracle_sparse"
 
     if args.attention_implementation == "seer_sparse":
         config = AutoConfig.from_pretrained(model_name_or_path)
@@ -188,9 +191,6 @@ def infer(args):
             cur_prompt = question_format.format(question=question)
         if args.surround_with_messages:
             if args.data_name in ["aime", "math"]:
-                # messages = [
-                #     {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
-                # ]
                 messages = [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": cur_prompt}
@@ -205,27 +205,19 @@ def infer(args):
 
 
     if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse":
-        if args.use_fused_kernel:
-            model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
-                                                    torch_dtype=torch.bfloat16,
-                                                    device_map="auto",
-                                                    load_gate = args.attention_implementation == "seer_sparse",
-                                                    use_cache=True,
-                                                    fused_norm=True,
-                                                    seerattn_threshold=args.threshold,
-                                                    seerattn_gate_block_size=args.block_size,
-                                                    seerattn_use_oracle_sparse = args.attention_implementation == "oracle_sparse",
-                                                    use_flash_rope=True,
-            )
-        else:
-            model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
-                                                    torch_dtype=torch.bfloat16,
-                                                    device_map="auto",
-                                                    load_gate = args.attention_implementation == "seer_sparse",
-                                                    seerattn_threshold=args.threshold,
-                                                    seerattn_gate_block_size=args.block_size,
-                                                    seerattn_use_oracle_sparse = args.attention_implementation == "oracle_sparse",
-                                                    use_cache=True,)
+        model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
+                                                torch_dtype=torch.bfloat16,
+                                                device_map="auto",
+                                                load_gate = args.attention_implementation == "seer_sparse",
+                                                use_cache=True,
+                                                seerattn_threshold=args.threshold,
+                                                seerattn_gate_block_size=args.block_size,
+                                                seerattn_use_oracle_sparse = args.attention_implementation == "oracle_sparse",
+                                                use_flash_rope=args.use_fused_kernel,
+                                                fused_norm=args.use_fused_kernel,
+                                                seerattn_output_sparsity=args.profile_sparsity,
+        )
+
     elif args.attention_implementation == "fa2":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
@@ -269,7 +261,6 @@ def infer(args):
         batch_input_ids = tokenized_prompts.input_ids
         attention_mask = tokenized_prompts.attention_mask
 
-        print("start batch: ", i, flush=True)
 
         if args.use_batch_exist:
             if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse":
@@ -311,11 +302,11 @@ def infer(args):
         completions.extend(batch_results)
         print("finish batch: ", i, flush=True)
 
-
-    total_activate_count, total_original_count, overall_sparsity_ratio = calculate_overall_sparsity(all_batch_sparsitys_info)
-    print("total_activate_count: ", total_activate_count)
-    print("total_original_count: ", total_original_count)
-    print("overall_sparsity: ", overall_sparsity_ratio)
+    if args.profile_sparsity:
+        total_activate_count, total_original_count, overall_sparsity_ratio = calculate_overall_sparsity(all_batch_sparsitys_info)
+        print("total_activate_count: ", total_activate_count)
+        print("total_original_count: ", total_original_count)
+        print("overall_sparsity: ", overall_sparsity_ratio)
     
     # check all the correct
     for i in range(len(prompt_batch)):
@@ -358,9 +349,10 @@ def infer(args):
         f.write(f"Max generate length: {max_generate_len}\n")
         f.write(f"Total time: {total_time/60:.2f}min\n")
         f.write(f"Average time per token: {average_time_per_token}\n")
-        f.write(f"Total activate count: {total_activate_count}\n")
-        f.write(f"Total original count: {total_original_count}\n")
-        f.write(f"Overall sparsity: {overall_sparsity_ratio}\n")
+        if args.profile_sparsity:
+            f.write(f"Total activate count: {total_activate_count}\n")
+            f.write(f"Total original count: {total_original_count}\n")
+            f.write(f"Overall sparsity: {overall_sparsity_ratio}\n")
         f.write("\n")
 
     print("Results saved to ", output_path_txt)

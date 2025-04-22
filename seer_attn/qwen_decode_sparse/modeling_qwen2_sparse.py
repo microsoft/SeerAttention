@@ -139,7 +139,6 @@ class Qwen2SeerAttention(nn.Module):
         )
 
         self.mask_loss_func = torch.nn.KLDivLoss()
-        self.profile_file = os.environ.get("PROFILE_FILE", None)
         self.use_flash_rope = config.use_flash_rope
 
     def forward(

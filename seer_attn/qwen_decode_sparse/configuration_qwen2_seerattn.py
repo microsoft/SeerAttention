@@ -179,7 +179,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         seerattn_prefill=False,
         seerattn_decode=True,
         seerattn_use_oracle_sparse=False,
-        seerattn_output_sparsity=True,
+        seerattn_output_sparsity=False,
         **kwargs,
     ):
         self.vocab_size = vocab_size
