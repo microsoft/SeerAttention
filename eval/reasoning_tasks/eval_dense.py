@@ -214,11 +214,9 @@ def infer(args):
         output_filename = f"{args.data_name}_bs{args.batch_size}_batchexist{args.use_batch_exist}_{args.attention_implementation}_densekernel.txt"
     os.makedirs(args.output_dir, exist_ok=True)
     output_path_txt = os.path.join(args.output_dir, output_filename)
-    # output_completions_path = os.path.join(args.output_dir, "completions.json")
     completions = []
     batch_size = args.batch_size
 
-    # fixed_generator = torch.Generator(device="cuda").manual_seed(42)
     begin = time.time()
 
     for i in range(0, len(prompt_batch), batch_size):
@@ -229,14 +227,10 @@ def infer(args):
         print("tokenize done: ", i, flush=True)
         batch_input_ids = tokenized_prompts.input_ids
         attention_mask = tokenized_prompts.attention_mask
-        # batch_input_ids = batch_input_ids.cuda()
-        # attention_mask = attention_mask.cuda()
+
 
         print("start iteration: ", i, flush=True)
 
-        # transformers.set_seed(42)
-        # torch.backends.cudnn.deterministic = True
-        # torch.backends.cudnn.benchmark = False
         print("args.use_batch_exist:",args.use_batch_exist)
         if args.use_batch_exist == 1:
             if args.use_sparse_kernel == 1:
@@ -270,97 +264,36 @@ def infer(args):
         
         for j in range(len(outputs)):
             output_seq = outputs[j]
-            num_tokens = (output_seq != tokenizer.pad_token_id).sum().item()
-            generate_lens.append(num_tokens - len(batch_input_ids[j]))
+            output_tokens = (output_seq != tokenizer.pad_token_id).sum().item()
+            prompt_tokens = (batch_input_ids[j] != tokenizer.pad_token_id).sum().item()
+            generate_lens.append(output_tokens - prompt_tokens)
 
         batch_results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        print(batch_results)
-        # completions.extend(batch_results)
+        # print(batch_results)
+        completions.extend(batch_results)
 
-        for j in range(i,min(i+batch_size,len(prompt_batch))):
-            d = examples[j]
-            gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
-            generated_responses = [batch_results[j-i]]
-            generated_answers = [extract_answer(generated_response, args.data_name) for generated_response in generated_responses]
-            is_correct_list = [check_is_correct(generated_answer, gt_ans) for generated_answer in generated_answers]
-            is_correct = any(is_correct_list)
-            if is_correct:
-                correct_cnt += 1
 
-                
         print("finish iteration: ", i, flush=True)
-
-
-
-    # # check all the correct
-    # for i in range(len(prompt_batch)):
-    #     d = examples[i]
-    #     gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
-    #     generated_responses = [completions[i]]
-    #     generated_answers = [extract_answer(generated_response, args.data_name) for generated_response in generated_responses]
-    #     is_correct_list = [check_is_correct(generated_answer, gt_ans) for generated_answer in generated_answers]
-    #     is_correct = any(is_correct_list)
-    #     if is_correct:
-    #         correct_cnt += 1
-
-
-    
-    print("llm generate done")
-    # if os.path.exists(checkpoint_filename_json):
-    #     os.remove(checkpoint_filename_json)
-
-    print("generate_lens: ", generate_lens)
-    
-    print(f"correct cnt / total cnt: {correct_cnt}/{len(examples)}")
-    print(f"Acc: {correct_cnt / len(examples):.4f}")
-
-
-    # generate_len
-    average_generate_len = sum(generate_lens) / len(generate_lens)
-    max_generate_len = max(generate_lens)
-    print(f"Max generate length: {max_generate_len}")
-    print(f"Average generate length: {average_generate_len}")
-
     end = time.time()
     total_time = end - begin
-    average_time_per_token = total_time / sum(generate_lens)
-    print(f"Total time: {total_time}s")
-    print(f"Average time per token: {average_time_per_token}")
+    print("llm generate done")
 
-    # # sparsity
-    # activate_block, original_block = calculate_average_percentage(sparsitys_all)
-    # # average_percentage_replaced_weighted = (weighted_sum + past_weighted_sum) / (total_weight + past_total_weight)
-    # average_percentage_replaced_weighted = (1 - activate_block / original_block) * 100
-    # print(f"Average percentage replaced weighted: {average_percentage_replaced_weighted}%")
+
+    with open(f"./completions_{args.rank}.json", 'w') as f:
+        json.dump(completions, f)
     
-    with open(output_path_txt, "a") as f:
-        f.write(f"Acc: {correct_cnt / len(examples):.4f}\n")
-        f.write(f"Average generate length: {average_generate_len}\n")
-        f.write(f"Max generate length: {max_generate_len}\n")
-        f.write(f"Total time: {total_time/60:.2f}\n")
-        f.write(f"Average time per token: {average_time_per_token}\n")
-        # f.write(f"Average percentage replaced weighted: {average_percentage_replaced_weighted}\n")
-        f.write("\n")
+    checkpoint_data = {
+        "output_path_txt": output_path_txt,
+        "generate_lens": generate_lens,
+        "total_time": total_time,
+        # "weighted_sum": weighted_sum,
+        # "total_weight": total_weight
+    }
+    with open(f"./others_{args.rank}.json", 'w') as f:
+        json.dump(checkpoint_data, f)
+    
+    print("Successfully saved!")
 
-    print("Results saved to ", output_path_txt)
-
-
-    # # Save completions to json
-    # with open(output_completions_path, "w") as f:
-    #     json.dump(completions, f)
-
-# def set_rng_seed(seed):
-#     random.seed(seed) #为python设置随机种子
-#     np.random.seed(seed)  #为numpy设置随机种子
-#     torch.manual_seed(seed)   #为CPU设置随机种子
-#     torch.cuda.manual_seed(seed)   #为当前GPU设置随机种子
-#     os.environ['PYTHONHASHSEED'] = str(seed)
-#     torch.cuda.manual_seed_all(seed)   #为所有GPU设置随机种子
-#     torch.backends.cudnn.benchmark = False
-#     torch.backends.cudnn.deterministic = True
-#     torch.backends.cudnn.enabled = True
-#     # os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':16:8'
-#     # torch.use_deterministic_algorithms(True)
 
 if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
