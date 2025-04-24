@@ -89,6 +89,7 @@ def _split_kernel(
     stride_o_b, stride_o_h, stride_o_split, stride_o_d,
     stride_meta_b, stride_meta_h, stride_meta_2, stride_meta_split,
     stride_mask_b, stride_mask_h, stride_mask_s,
+    first_block_unmasked: tl.constexpr,
     BLOCK_H: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_D: tl.constexpr,
@@ -127,9 +128,10 @@ def _split_kernel(
     q = tl.load(q_ptr + offs_h[:, None] * stride_q_h + offs_d[None, :] * stride_q_d, mask=offs_h[:, None] < gqa_group_size)
     start = blocks_per_split * split_idx + tl.minimum(split_idx, remaining_blocks) + leftpad_block_offset
     for block_idx in range(loop_range):
-        start_n = (start + block_idx) * BLOCK_N
-        mask_val = tl.load(mask_ptr + (start + block_idx) * stride_mask_s)
-        if mask_val == 1:
+        cur_block_idx = (start + block_idx)
+        start_n = cur_block_idx * BLOCK_N
+        mask_val = tl.load(mask_ptr + cur_block_idx * stride_mask_s)
+        if mask_val == 1 or (first_block_unmasked == True and cur_block_idx == leftpad_block_offset):
             k_ptr = k_cache_ptr + start_n * stride_k_s 
             v_ptr = v_cache_ptr + start_n * stride_v_s
 
@@ -218,10 +220,10 @@ def block_sparse_flash_decode_leftpad_gqa_mask(
     block_mask,
     block_size=32,
     sm_scale=None,
+    first_block_unmasked=False,
     debug=False,
 ):
-
-
+    
     """
         Compute block sparse flash decode for left-padded batch of data.
 
@@ -241,6 +243,8 @@ def block_sparse_flash_decode_leftpad_gqa_mask(
                 cache sequences are divided into blocks.
             sm_scale (float, optional): Scaling factor used for the softmax operation. If not provided, 
                 it is computed as 1/sqrt(dim) where dim is the feature dimension of q.
+            first_block_unmasked: (bool, optional): If True, the first block is always true. This is useful when
+                the gate can not have a precise estimate of the first block.
             debug (bool, optional): If set to True, the function returns additional debugging information 
                 (the intermediate partial output tensor and meta data). Defaults to False.
         Returns:
@@ -273,6 +277,7 @@ def block_sparse_flash_decode_leftpad_gqa_mask(
         dim + dim_v) * 2  #kv_seqlen * (dim + dim_v) * 2
     total_mblocks = batch * heads_kv * num_m_blocks
     num_sm = 64
+    # num_sm = self.num_sm
     num_splits = num_splits_heuristic(
         total_mblocks,
         num_sm,
@@ -282,6 +287,7 @@ def block_sparse_flash_decode_leftpad_gqa_mask(
         is_causal_or_local=True,
         max_splits=128)
 
+    # print("num_splits:", num_splits, "num_blocks:", num_n_blocks)
 
     num_splits_pow2 = triton.next_power_of_2(num_splits)
 
@@ -309,6 +315,7 @@ def block_sparse_flash_decode_leftpad_gqa_mask(
         o_partial.stride(0), o_partial.stride(1), o_partial.stride(2), o_partial.stride(3),
         meta_data.stride(0), meta_data.stride(1), meta_data.stride(2), meta_data.stride(3),
         block_mask.stride(0), block_mask.stride(1), block_mask.stride(2),
+        first_block_unmasked=first_block_unmasked,
         BLOCK_H=BLOCK_H,
         BLOCK_N=block_size,
         BLOCK_D=BLOCK_D,
@@ -424,6 +431,7 @@ if __name__ == "__main__":
     cache_seqlens[
         random_index] = max_cache_seqlen  # Assign cache_seqlen to ensure at least one occurrence
 
+    # cache_seqlens = torch.full((batch,), max_cache_seqlen, dtype=torch.int32, device='cuda')
 
     num_blocks = (max_cache_seqlen + block_size - 1) // block_size
 
@@ -464,7 +472,6 @@ if __name__ == "__main__":
         block_size,
     )
 
-
     print("max difference: ", torch.max(torch.abs(ref - triton_out)))
     assert torch.allclose(ref, triton_out, atol=1e-2), "Output mismatch between Triton and reference implementation"
     print("Passed the ref test!")
@@ -490,7 +497,6 @@ if __name__ == "__main__":
             K,
             V,
             cache_seqlens,
-            max_cache_seqlen,
             block_mask,
             block_size,
         )  
@@ -504,7 +510,6 @@ if __name__ == "__main__":
             K,
             V,
             cache_seqlens,
-            max_cache_seqlen,
             block_mask,
             block_size,
         )    

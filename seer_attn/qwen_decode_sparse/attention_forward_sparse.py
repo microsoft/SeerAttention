@@ -162,6 +162,7 @@ def sparse_flash_attention_forward(
             block_mask=block_mask,
             block_size=block_size,
             sm_scale=softmax_scale,
+            first_block_unmasked=True,
         )
 
     return attn_output
