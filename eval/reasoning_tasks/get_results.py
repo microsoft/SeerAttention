@@ -56,13 +56,14 @@ def parse_args():
     parser.add_argument("--dtype", default='auto', type=str)
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--rank", default=0, type=int)
-    parser.add_argument("--attention_implementation", default="ours", choices=["ours", "fa2"], type=str)
-    parser.add_argument("--use_batch_exist", default=1, type=int)
-    parser.add_argument("--use_sparse_kernel", default=0, type=int)
+    # parser.add_argument("--attention_implementation", default="oracle_sparse", choices=["seer_sparse", "oracle_sparse", "fa2", "sdpa"], type=str)
+    # parser.add_argument("--use_batch_exist", default=1, type=int)
+    # parser.add_argument("--use_sparse_kernel", default=0, type=int)
     parser.add_argument('--repeat', type=int, default=1, help="repeat")
-    parser.add_argument("--gate_hidden_size", default=128, type=int)
-    parser.add_argument("--q_head_pooling_type", default="Qproj", type=str)
-    parser.add_argument("--block_size", default=64, type=int)
+    # parser.add_argument("--gate_hidden_size", default=128, type=int)
+    # parser.add_argument("--q_head_pooling_type", default="Qproj", type=str)
+    # parser.add_argument("--block_size", default=64, type=int)
+    parser.add_argument("--profile_sparsity", action="store_true")
     args = parser.parse_args()
     
     args.top_p = 1 if args.temperature == 0 else args.top_p # top_p must be 1 when using greedy 
@@ -132,8 +133,8 @@ def infer(args):
     output_path_txt = checkpoint_data['output_path_txt']
     generate_lens = checkpoint_data['generate_lens']
     total_time = checkpoint_data['total_time']
-    # past_weighted_sum = checkpoint_data['weighted_sum']
-    # past_total_weight = checkpoint_data['total_weight']
+    if args.profile_sparsity:
+        overall_sparsity = checkpoint_data['overall_sparsity']
 
     if os.path.exists(f"./completions_{args.rank}.json"):
         os.remove(f"./completions_{args.rank}.json")
@@ -172,11 +173,8 @@ def infer(args):
     print(f"Total time: {total_time}s")
     print(f"Average time per token: {average_time_per_token}")
 
-    # # sparsity
-    # activate_block, original_block = calculate_average_percentage(sparsitys_all)
-    # # average_percentage_replaced_weighted = (weighted_sum + past_weighted_sum) / (total_weight + past_total_weight)
-    # average_percentage_replaced_weighted = (1 - activate_block / original_block) * 100
-    # print(f"Average percentage replaced weighted: {average_percentage_replaced_weighted}%")
+    # sparsity
+    print("Overall_sparsity: ", overall_sparsity_ratio)
     
     with open(output_path_txt, "a") as f:
         f.write(f"Acc: {correct_cnt / len(examples):.4f}\n")
@@ -184,7 +182,8 @@ def infer(args):
         f.write(f"Max generate length: {max_generate_len}\n")
         f.write(f"Total time: {total_time/60:.2f}\n")
         f.write(f"Average time per token: {average_time_per_token}\n")
-        # f.write(f"Average percentage replaced weighted: {average_percentage_replaced_weighted}\n")
+        if args.profile_sparsity:
+            f.write(f"Overall sparsity: {overall_sparsity_ratio}\n")
         f.write("\n")
 
     print("Results saved to ", output_path_txt)
