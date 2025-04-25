@@ -101,7 +101,7 @@ def parse_args():
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--block_size", default=64, type=int)
     parser.add_argument("--rank", default=0, type=int)
-    parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "oracle_sparse", "fa2", "sdpa"], type=str)
+    parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
     parser.add_argument("--use_batch_exist", default=1, type=int)
     parser.add_argument("--use_fused_kernel", action="store_true")
     parser.add_argument("--profile_sparsity", action="store_true")
@@ -206,7 +206,7 @@ def infer(args):
         prompt_batch.append(cur_prompt)
 
 
-    if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse":
+    if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse" or args.attention_implementation == "seer_dense":
         model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
                                                 torch_dtype=torch.bfloat16,
                                                 device_map="auto",
@@ -215,6 +215,7 @@ def infer(args):
                                                 seerattn_threshold=args.threshold,
                                                 seerattn_gate_block_size=args.block_size,
                                                 seerattn_use_oracle_sparse = args.attention_implementation == "oracle_sparse",
+                                                seerattn_use_dense_kernel = args.attention_implementation == "seer_dense",
                                                 use_flash_rope=args.use_fused_kernel,
                                                 fused_norm=args.use_fused_kernel,
                                                 seerattn_output_sparsity=args.profile_sparsity,

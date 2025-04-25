@@ -7,7 +7,7 @@ limit=-1
 repeat=1
 
 use_batch_exist=1
-attention_implementation=seer_sparse # fa2 seer_sparse
+attention_implementation=seer_sparse # fa2 seer_sparse seer_dense
 
 for gpu in 0 1 2 3
 do

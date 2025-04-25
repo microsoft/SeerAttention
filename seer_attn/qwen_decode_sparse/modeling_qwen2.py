@@ -34,6 +34,7 @@ from seer_attn.qwen_decode_sparse.attn_gate_inf import ATTNGATE_CLASSES
 import copy, math, os
 from einops import rearrange
 from seer_attn.qwen_decode_sparse.attention_forward_sparse import sparse_flash_attention_forward
+from seer_attn.qwen_decode_sparse.attention_forward_dense import dense_flash_attention_forward
 from seer_attn.modules.layernorm import RMSNorm
 from flash_attn.layers.rotary import apply_rotary_emb_func
 from seer_attn.qwen_decode_sparse.cache_utils import KCompressionCache
@@ -183,27 +184,28 @@ class Qwen2SeerAttention(nn.Module):
             k = rearrange(k, '... (h d) -> ... h d', d=self.head_dim)
             v = rearrange(v, '... (h d) -> ... h d', d=self.head_dim)
 
-        if self.config.seerattn_use_oracle_sparse:
-            block_sparse_mask = compute_oracle_sparse_mask(
-                q,
-                k,
-                attention_mask,
-                self.config.seerattn_gate_block_size,
-                self.config.seerattn_threshold,
-            )
-        else:
-            max_cache_len = k.shape[1]
-            block_sparse_mask = self.attn_gate(
-                k_nope,
-                self.layer_idx,
-                k_compressed_cache,
-                q_nope,
-                block_attention_mask,
-                max_cache_len,
-                position_embeddings,
-                block_position_embeddings,
-                threshold=self.config.seerattn_threshold,
-            )
+        if not self.config.seerattn_use_dense_kernel:
+            if self.config.seerattn_use_oracle_sparse:
+                block_sparse_mask = compute_oracle_sparse_mask(
+                    q,
+                    k,
+                    attention_mask,
+                    self.config.seerattn_gate_block_size,
+                    self.config.seerattn_threshold,
+                )
+            else:
+                max_cache_len = k.shape[1]
+                block_sparse_mask = self.attn_gate(
+                    k_nope,
+                    self.layer_idx,
+                    k_compressed_cache,
+                    q_nope,
+                    block_attention_mask,
+                    max_cache_len,
+                    position_embeddings,
+                    block_position_embeddings,
+                    threshold=self.config.seerattn_threshold,
+                )
 
         activate_and_original_block_count = None
         if self.config.seerattn_output_sparsity and q_len == 1:
@@ -211,18 +213,29 @@ class Qwen2SeerAttention(nn.Module):
             original_block_count = block_attention_mask.sum() * self.config.num_key_value_heads # block_attention_mask in shape batch, 1, seq(block)
             activate_and_original_block_count = (activate_block_count, original_block_count)
             #print(f"activate_and_original_block_count: {activate_and_original_block_count}")
-            
-        attn_output = sparse_flash_attention_forward(
-            q,
-            k,
-            v,
-            attention_mask=attention_mask,
-            query_length=q_len,
-            softmax_scale=self.scaling,
-            cache_seqlens=cache_seqlens,
-            block_mask=block_sparse_mask,
-            block_size=self.config.seerattn_gate_block_size,
-        )
+
+        if self.config.seerattn_use_dense_kernel:
+            attn_output = dense_flash_attention_forward(
+                q,
+                k,
+                v,
+                attention_mask=attention_mask,
+                query_length=q_len,
+                softmax_scale=self.scaling,
+                cache_seqlens=cache_seqlens,
+            )
+        else:
+            attn_output = sparse_flash_attention_forward(
+                q,
+                k,
+                v,
+                attention_mask=attention_mask,
+                query_length=q_len,
+                softmax_scale=self.scaling,
+                cache_seqlens=cache_seqlens,
+                block_mask=block_sparse_mask,
+                block_size=self.config.seerattn_gate_block_size,
+            )
         
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
