@@ -652,6 +652,8 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         generation_config, model_kwargs = self._prepare_generation_config(None)
         generated = input_ids
         eos_token_id = generation_config.eos_token_id
+        if isinstance(eos_token_id, list):
+            eos_token_id = eos_token_id[0]
         initial_batch_size = input_ids.shape[0]
 
         device = input_ids.device

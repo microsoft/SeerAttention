@@ -106,7 +106,6 @@ def get_three_prompt(prompt_type, data_name):
 def infer(args):
     print(args)
     model_name_or_path = args.model_name_or_path
-    print(f"current eval model: {model_name_or_path}")
     generate_lens = []
     prompt_lens = []
 
@@ -174,7 +173,8 @@ def infer(args):
     print(f"Average time per token: {average_time_per_token}")
 
     # sparsity
-    print("Overall_sparsity: ", overall_sparsity_ratio)
+    if args.profile_sparsity:
+        print("Overall_sparsity: ", overall_sparsity_ratio)
     
     with open(output_path_txt, "a") as f:
         f.write(f"Acc: {correct_cnt / len(examples):.4f}\n")

@@ -241,7 +241,7 @@ def infer(args):
 
     generate_lens = []
     correct_cnt = 0
-    output_filename = f"{args.data_name}_bs_{args.batch_size}_attn_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}"
+    output_filename = f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}.txt"
     os.makedirs(args.output_dir, exist_ok=True)
     output_path_txt = os.path.join(args.output_dir, output_filename)
     output_completions_path = os.path.join(args.output_dir, "completions.json")
@@ -290,7 +290,8 @@ def infer(args):
         
         print("get output in batch: ", i, flush=True)
         
-        all_batch_sparsitys_info.append(batch_sparsitys_info)
+        if args.profile_sparsity:
+            all_batch_sparsitys_info.append(batch_sparsitys_info)
 
         for j in range(len(outputs)):
             output_seq = outputs[j]
@@ -318,7 +319,7 @@ def infer(args):
             "output_path_txt": output_path_txt,
             "generate_lens": generate_lens,
             "total_time": total_time,
-            "overall_sparsity: ", overall_sparsity_ratio,
+            "overall_sparsity": overall_sparsity_ratio,
         }
     else:
         checkpoint_data = {
@@ -337,5 +338,4 @@ def infer(args):
 if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     args = parse_args()
-    set_seed(args.seed)
     infer(args)
