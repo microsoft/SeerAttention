@@ -184,8 +184,8 @@ class Qwen2SeerAttention(nn.Module):
             k = rearrange(k, '... (h d) -> ... h d', d=self.head_dim)
             v = rearrange(v, '... (h d) -> ... h d', d=self.head_dim)
 
-        if not self.config.seerattn_use_dense_kernel:
-            if self.config.seerattn_use_oracle_sparse:
+        if self.config.seerattn_implementation != "seer_dense":
+            if self.config.seerattn_implementation == "oracle_sparse":
                 block_sparse_mask = compute_oracle_sparse_mask(
                     q,
                     k,
@@ -214,7 +214,7 @@ class Qwen2SeerAttention(nn.Module):
             activate_and_original_block_count = (activate_block_count, original_block_count)
             #print(f"activate_and_original_block_count: {activate_and_original_block_count}")
 
-        if self.config.seerattn_use_dense_kernel:
+        if self.config.seerattn_implementation == "seer_dense":
             attn_output = dense_flash_attention_forward(
                 q,
                 k,
@@ -664,9 +664,11 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         # Initialize variables
         generation_config, model_kwargs = self._prepare_generation_config(None)
         generated = input_ids
-        eos_token_id = generation_config.eos_token_id
-        if isinstance(eos_token_id, list):
-            eos_token_id = eos_token_id[0]
+        # eos_token_id = generation_config.eos_token_id
+        if isinstance(generation_config.eos_token_id, list):
+            eos_token_id = generation_config.eos_token_id[0]
+        else:
+            eos_token_id = generation_config.eos_token_id
         initial_batch_size = input_ids.shape[0]
 
         device = input_ids.device
@@ -724,7 +726,10 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
 
 
             # Update finished flags for the active sequences.
-            finished[cur_to_orig] |= (next_tokens.squeeze(1) == eos_token_id)
+            if isinstance(generation_config.eos_token_id, list):
+                finished[cur_to_orig] |= (next_tokens.squeeze(1) in generation_config.eos_token_id)
+            else:
+                finished[cur_to_orig] |= (next_tokens.squeeze(1) == eos_token_id)
 
             # If all sequences are finished, break.
             if finished.all():
@@ -738,7 +743,7 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
                 # Update the kv cache using indices relative to the current cache.
                 print("active_indices_local", active_indices_local, "kvlen:", attention_mask.shape[1], flush=True)
                 current_kvcache.batch_select_indices(active_indices_local)
-                if not self.config.seerattn_use_oracle_sparse:
+                if self.config.seerattn_implementation != "oracle_sparse":
                     current_kcompressed_cache.batch_select_indices(active_indices_local)
                 torch.cuda.empty_cache()
                 if attention_mask is not None:

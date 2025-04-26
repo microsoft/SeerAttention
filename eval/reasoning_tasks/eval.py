@@ -102,7 +102,7 @@ def parse_args():
     parser.add_argument("--block_size", default=64, type=int)
     parser.add_argument("--rank", default=0, type=int)
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
-    parser.add_argument("--use_batch_exist", default=1, type=int)
+    parser.add_argument("--use_batch_exist", default=True, type=bool)
     parser.add_argument("--use_fused_kernel", action="store_true")
     parser.add_argument("--profile_sparsity", action="store_true")
     args = parser.parse_args()
@@ -214,8 +214,7 @@ def infer(args):
                                                 use_cache=True,
                                                 seerattn_threshold=args.threshold,
                                                 seerattn_gate_block_size=args.block_size,
-                                                seerattn_use_oracle_sparse = args.attention_implementation == "oracle_sparse",
-                                                seerattn_use_dense_kernel = args.attention_implementation == "seer_dense",
+                                                seerattn_implementation = args.attention_implementation,
                                                 use_flash_rope=args.use_fused_kernel,
                                                 fused_norm=args.use_fused_kernel,
                                                 seerattn_output_sparsity=args.profile_sparsity,
@@ -244,8 +243,16 @@ def infer(args):
     correct_cnt = 0
     output_filename = f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}.txt"
     os.makedirs(args.output_dir, exist_ok=True)
+    output_completions_dir = os.path.join(args.output_dir, "completions")
+    output_sparsity_dir = os.path.join(args.output_dir, "sparsity_info")
+    os.makedirs(output_completions_dir, exist_ok=True)
+    os.makedirs(output_sparsity_dir, exist_ok=True)
+    os.makedirs("./temp", exist_ok=True)
     output_path_txt = os.path.join(args.output_dir, output_filename)
-    output_completions_path = os.path.join(args.output_dir, "completions.json")
+    completion_filename = output_filename[:-4] + "_completions.json"
+    sparsity_filename = output_filename[:-4] + "_sparsity_info.json"
+    output_completions_json = os.path.join(output_completions_dir, completion_filename)
+    output_sparsity_json = os.path.join(output_sparsity_dir, sparsity_filename)
     completions = []
     batch_size = args.batch_size
 
@@ -262,7 +269,7 @@ def infer(args):
         attention_mask = tokenized_prompts.attention_mask
 
 
-        if args.use_batch_exist == 1:
+        if args.use_batch_exist:
             if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse":
                 outputs, batch_sparsitys_info = model.batch_exist_generate(
                     input_ids=batch_input_ids,
@@ -312,8 +319,16 @@ def infer(args):
         total_activate_count, total_original_count, overall_sparsity_ratio = calculate_overall_sparsity(all_batch_sparsitys_info)
         print("Overall_sparsity: ", overall_sparsity_ratio)
         
-    with open(f"./completions_{args.rank}.json", 'w') as f:
+    with open(f"./temp/completions_{args.rank}.json", 'w') as f:
         json.dump(completions, f)
+    
+    if args.rank == 0:
+        with open(output_completions_json, 'w') as f:
+            json.dump(completions, f)
+        if args.profile_sparsity:
+            sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
+            with open(output_sparsity_json, 'w') as f:
+                json.dump(sparsity_info, f)
     
     if args.profile_sparsity:
         checkpoint_data = {
@@ -329,7 +344,7 @@ def infer(args):
             "total_time": total_time,
         }
         
-    with open(f"./others_{args.rank}.json", 'w') as f:
+    with open(f"./temp/others_{args.rank}.json", 'w') as f:
         json.dump(checkpoint_data, f)
     
     print("Successfully saved!")

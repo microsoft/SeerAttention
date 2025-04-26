@@ -122,11 +122,11 @@ def infer(args):
     examples = examples * args.repeat
 
 
-    with open(f"./completions_{args.rank}.json", 'r') as f:
+    with open(f"./temp/completions_{args.rank}.json", 'r') as f:
         completions = json.load(f)
     
 
-    with open(f"./others_{args.rank}.json", 'r') as f:
+    with open(f"./temp/others_{args.rank}.json", 'r') as f:
         checkpoint_data = json.load(f)
 
     output_path_txt = checkpoint_data['output_path_txt']
@@ -135,11 +135,11 @@ def infer(args):
     if args.profile_sparsity:
         overall_sparsity = checkpoint_data['overall_sparsity']
 
-    if os.path.exists(f"./completions_{args.rank}.json"):
-        os.remove(f"./completions_{args.rank}.json")
+    if os.path.exists(f"./temp/completions_{args.rank}.json"):
+        os.remove(f"./temp/completions_{args.rank}.json")
 
-    if os.path.exists(f"./others_{args.rank}.json"):
-        os.remove(f"./others_{args.rank}.json")
+    if os.path.exists(f"./temp/others_{args.rank}.json"):
+        os.remove(f"./temp/others_{args.rank}.json")
     
     print("Successfully loaded!")
 
@@ -174,7 +174,7 @@ def infer(args):
 
     # sparsity
     if args.profile_sparsity:
-        print("Overall_sparsity: ", overall_sparsity_ratio)
+        print("Overall_sparsity: ", overall_sparsity)
     
     with open(output_path_txt, "a") as f:
         f.write(f"Acc: {correct_cnt / len(examples):.4f}\n")
@@ -183,7 +183,7 @@ def infer(args):
         f.write(f"Total time: {total_time/60:.2f}\n")
         f.write(f"Average time per token: {average_time_per_token}\n")
         if args.profile_sparsity:
-            f.write(f"Overall sparsity: {overall_sparsity_ratio}\n")
+            f.write(f"Overall sparsity: {overall_sparsity}\n")
         f.write("\n")
 
     print("Results saved to ", output_path_txt)

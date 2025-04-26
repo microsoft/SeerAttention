@@ -178,8 +178,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         seerattn_last_block_dense=True,
         seerattn_prefill=False,
         seerattn_decode=True,
-        seerattn_use_oracle_sparse=False,
-        seerattn_use_dense_kernel=False,
+        seerattn_implementation="seer_sparse", # seer_sparse, seer_dense, oracle_sparse
         seerattn_output_sparsity=False,
         **kwargs,
     ):
@@ -224,8 +223,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         self.seerattn_last_block_dense = seerattn_last_block_dense
         self.seerattn_prefill = seerattn_prefill
         self.seerattn_decode = seerattn_decode
-        self.seerattn_use_oracle_sparse = seerattn_use_oracle_sparse
-        self.seerattn_use_dense_kernel = seerattn_use_dense_kernel
+        self.seerattn_implementation = seerattn_implementation
         self.seerattn_output_sparsity = seerattn_output_sparsity
         
         assert self.seerattn_sparsity_method in ['threshold', 'nz_ratio']
