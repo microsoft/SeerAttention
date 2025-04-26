@@ -116,7 +116,6 @@ def sparse_flash_attention_forward(
     query_length: int,
     softmax_scale: Optional[float] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
-    max_cache_len: Optional[int] = None,
     block_mask: Optional[torch.Tensor] = None,
     block_size: Optional[int] = None,
     **kwargs,
@@ -148,11 +147,6 @@ def sparse_flash_attention_forward(
         )
         attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
     else:
-
-        cache_seqlens = torch.sum(attention_mask.to(torch.int32), dim=-1, dtype=torch.int32) 
-        if max_cache_len is None:
-            max_cache_len = cache_seqlens.max().item()
-
 
         attn_output = block_sparse_flash_decode_leftpad_gqa_mask(
             query_states, # [batch_size, num_heads, head_dim] or [batch_size, 1, num_heads, head_dim]

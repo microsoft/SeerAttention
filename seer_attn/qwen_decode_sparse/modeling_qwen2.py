@@ -141,6 +141,8 @@ class Qwen2SeerAttention(nn.Module):
 
         self.mask_loss_func = torch.nn.KLDivLoss()
         self.use_flash_rope = config.use_flash_rope
+        self.seerattn_implementation = config.seerattn_implementation
+        self.seerattn_output_sparsity = config.seerattn_output_sparsity
 
     def forward(
         self,
@@ -149,6 +151,7 @@ class Qwen2SeerAttention(nn.Module):
         past_key_value: Optional[Cache] = None,
         k_compressed_cache: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        cache_seqlens: Optional[torch.Tensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  
         block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, ## block position embeddings
         block_attention_mask: Optional[torch.Tensor] = None, ## block attention mask
@@ -176,16 +179,14 @@ class Qwen2SeerAttention(nn.Module):
         else:
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=2)
 
-        cache_seqlens = None
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             k, v = past_key_value.update(k.flatten(-2, -1), v.flatten(-2, -1), self.layer_idx, cache_kwargs)
-            cache_seqlens = past_key_value.get_seq_length()
             k = rearrange(k, '... (h d) -> ... h d', d=self.head_dim)
             v = rearrange(v, '... (h d) -> ... h d', d=self.head_dim)
 
-        if self.config.seerattn_implementation != "seer_dense":
-            if self.config.seerattn_implementation == "oracle_sparse":
+        if self.seerattn_implementation != "seer_dense":
+            if self.seerattn_implementation == "oracle_sparse":
                 block_sparse_mask = compute_oracle_sparse_mask(
                     q,
                     k,
@@ -194,25 +195,23 @@ class Qwen2SeerAttention(nn.Module):
                     self.config.seerattn_threshold,
                 )
             else:
-                max_cache_len = k.shape[1]
                 block_sparse_mask = self.attn_gate(
                     k_nope,
                     self.layer_idx,
                     k_compressed_cache,
                     q_nope,
                     block_attention_mask,
-                    max_cache_len,
-                    position_embeddings,
-                    block_position_embeddings,
+                    max_cache_len=k.shape[1],
+                    position_embeddings=position_embeddings,
+                    block_position_embeddings=block_position_embeddings,
                     threshold=self.config.seerattn_threshold,
                 )
 
         activate_and_original_block_count = None
-        if self.config.seerattn_output_sparsity and q_len == 1:
+        if self.seerattn_output_sparsity and q_len == 1:
             activate_block_count = block_sparse_mask.sum()   # block_sparse_mask in shape batch, kv_heads, seq(block)
             original_block_count = block_attention_mask.sum() * self.config.num_key_value_heads # block_attention_mask in shape batch, 1, seq(block)
-            activate_and_original_block_count = (activate_block_count, original_block_count)
-            #print(f"activate_and_original_block_count: {activate_and_original_block_count}")
+            activate_and_original_block_count = (activate_block_count.item(), original_block_count.item())
 
         if self.config.seerattn_implementation == "seer_dense":
             attn_output = dense_flash_attention_forward(
@@ -292,6 +291,7 @@ class Qwen2DecoderLayer(nn.Module):
         past_key_value: Optional[Cache] = None,
         k_compressed_cache: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        cache_seqlens: Optional[torch.Tensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.45
         block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_attention_mask: Optional[torch.Tensor] = None,
@@ -310,6 +310,7 @@ class Qwen2DecoderLayer(nn.Module):
             past_key_value=past_key_value,
             k_compressed_cache=k_compressed_cache,
             cache_position=cache_position,
+            cache_seqlens=cache_seqlens,
             position_embeddings=position_embeddings,
             block_position_embeddings=block_position_embeddings,
             block_attention_mask=block_attention_mask,
@@ -494,6 +495,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
+        cache_seqlens = torch.sum(attention_mask.to(torch.int32), dim=-1, dtype=torch.int32) 
 
         hidden_states = inputs_embeds
 
@@ -522,6 +524,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 past_key_value=past_key_values,
                 k_compressed_cache=k_compressed_cache,
                 cache_position=cache_position,
+                cache_seqlens=cache_seqlens,
                 position_embeddings=position_embeddings,
                 block_position_embeddings=block_position_embeddings,
                 block_attention_mask=block_attention_mask,

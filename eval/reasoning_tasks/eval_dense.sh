@@ -7,23 +7,22 @@ limit=-1
 repeat=1
 
 use_batch_exist=1
-attention_implementation=seer_sparse # fa2 seer_sparse seer_dense
+attention_implementation=seer_dense # fa2 seer_sparse seer_dense
 
 for gpu in 0 1 2 3
 do
-    CUDA_VISIBLE_DEVICES=$gpu \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     python eval.py \
-    --model_name_or_path $model_dir \
-    --data_name $task \
-    --batch_size $bs \
-    --limit $limit \
-    --repeat $repeat \
-    --output_dir $output_dir \
-    --attention_implementation $attention_implementation \
-    --threshold 0 \
-    --use_batch_exist $use_batch_exist \
-    --surround_with_messages  \
-    --rank $gpu &
+        --model_name_or_path $model_dir \
+        --data_name $task \
+        --batch_size $bs \
+        --limit $limit \
+        --repeat $repeat \
+        --output_dir $output_dir \
+        --attention_implementation $attention_implementation \
+        --use_batch_exist $use_batch_exist \
+        --surround_with_messages  \
+        --rank $gpu &
 done
 wait
 
@@ -32,14 +31,10 @@ echo "All generation finished"
 for gpu in 0 1 2 3
 do
     python get_results.py \
-    --model_name_or_path $model_dir \
-    --data_name $task \
-    --batch_size $bs \
-    --limit $limit \
-    --repeat $repeat \
-    --output_dir $output_dir \
-    --surround_with_messages  \
-    --rank $gpu  
+        --data_name $task \
+        --limit $limit \
+        --repeat $repeat \
+        --output_dir ${output_dir}/rank${rank} \
 done
 
 echo "All finished"

@@ -115,7 +115,6 @@ def dense_flash_attention_forward(
     query_length: int,
     softmax_scale: Optional[float] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
-    max_cache_len: Optional[int] = None,
     **kwargs,
 ):
     """
@@ -161,10 +160,6 @@ def dense_flash_attention_forward(
         )
         attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
     else:
-
-        cache_seqlens = torch.sum(attention_mask.to(torch.int32), dim=-1, dtype=torch.int32) 
-        if max_cache_len is None:
-            max_cache_len = cache_seqlens.max().item()
 
         attn_output = flash_decode_leftpad(
             query_states, # [batch_size, num_heads, head_dim] or [batch_size, 1, num_heads, head_dim]

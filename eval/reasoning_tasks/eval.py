@@ -147,6 +147,8 @@ def get_three_prompt(prompt_type, data_name):
 def infer(args):
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
+    device = f"cuda:{args.rank}"
+
     generate_lens = []
     prompt_lens = []
 
@@ -209,7 +211,7 @@ def infer(args):
     if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse" or args.attention_implementation == "seer_dense":
         model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
                                                 torch_dtype=torch.bfloat16,
-                                                device_map="auto",
+                                                device_map=device,
                                                 load_gate = args.attention_implementation == "seer_sparse",
                                                 use_cache=True,
                                                 seerattn_threshold=args.threshold,
@@ -223,14 +225,14 @@ def infer(args):
     elif args.attention_implementation == "fa2":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
-                                                    device_map="auto",
+                                                    device_map=device,
                                                     use_cache=True,
                                                     attn_implementation="flash_attention_2",
                                                     trust_remote_code=True)
     elif args.attention_implementation == "sdpa":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
-                                                    device_map="auto",
+                                                    device_map=f"cuda:{args.rank}",
                                                     use_cache=True,
                                                     trust_remote_code=True)
     else:
@@ -242,17 +244,14 @@ def infer(args):
     generate_lens = []
     correct_cnt = 0
     output_filename = f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}.txt"
-    os.makedirs(args.output_dir, exist_ok=True)
-    output_completions_dir = os.path.join(args.output_dir, "completions")
-    output_sparsity_dir = os.path.join(args.output_dir, "sparsity_info")
-    os.makedirs(output_completions_dir, exist_ok=True)
-    os.makedirs(output_sparsity_dir, exist_ok=True)
-    os.makedirs("./temp", exist_ok=True)
-    output_path_txt = os.path.join(args.output_dir, output_filename)
+    output_dir = os.path.join(args.output_dir, f"rank{args.rank}")
+    os.makedirs(output_dir, exist_ok=True)
+    print("make output dir: ", output_dir)
+    output_path_txt = os.path.join(output_dir, output_filename)
     completion_filename = output_filename[:-4] + "_completions.json"
     sparsity_filename = output_filename[:-4] + "_sparsity_info.json"
-    output_completions_json = os.path.join(output_completions_dir, completion_filename)
-    output_sparsity_json = os.path.join(output_sparsity_dir, sparsity_filename)
+    ckpt_filename = output_filename[:-4] + "_ckpt.json"
+
     completions = []
     batch_size = args.batch_size
 
@@ -264,7 +263,7 @@ def infer(args):
         # Tokenize the prompt batch
         print("start batch: ", i, flush=True)
         batch_prompts = prompt_batch[i:i+batch_size]
-        tokenized_prompts = tokenizer(batch_prompts, padding="longest", return_tensors="pt", add_special_tokens=True).to('cuda')
+        tokenized_prompts = tokenizer(batch_prompts, padding="longest", return_tensors="pt", add_special_tokens=True).to(device)
         batch_input_ids = tokenized_prompts.input_ids
         attention_mask = tokenized_prompts.attention_mask
 
@@ -319,17 +318,16 @@ def infer(args):
         total_activate_count, total_original_count, overall_sparsity_ratio = calculate_overall_sparsity(all_batch_sparsitys_info)
         print("Overall_sparsity: ", overall_sparsity_ratio)
         
-    with open(f"./temp/completions_{args.rank}.json", 'w') as f:
+    
+    with open(os.path.join(output_dir, completion_filename), 'w') as f:
         json.dump(completions, f)
-    
-    if args.rank == 0:
-        with open(output_completions_json, 'w') as f:
-            json.dump(completions, f)
-        if args.profile_sparsity:
-            sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
-            with open(output_sparsity_json, 'w') as f:
-                json.dump(sparsity_info, f)
-    
+        
+
+    if args.profile_sparsity:
+        sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
+        with open(os.path.join(output_dir, sparsity_filename), 'w') as f:
+            json.dump(sparsity_info, f)
+
     if args.profile_sparsity:
         checkpoint_data = {
             "output_path_txt": output_path_txt,
@@ -344,7 +342,7 @@ def infer(args):
             "total_time": total_time,
         }
         
-    with open(f"./temp/others_{args.rank}.json", 'w') as f:
+    with open(os.path.join(output_dir, ckpt_filename), 'w') as f:
         json.dump(checkpoint_data, f)
     
     print("Successfully saved!")

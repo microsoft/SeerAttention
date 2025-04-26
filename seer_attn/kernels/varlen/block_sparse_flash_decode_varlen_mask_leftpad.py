@@ -294,45 +294,46 @@ def block_sparse_flash_decode_leftpad_gqa_mask(
     o_partial = torch.empty((batch, heads, num_splits, dim_v), device=q.device, dtype=q.dtype)
     meta_data = torch.empty((batch, heads, 2, num_splits), device=q.device, dtype=torch.float32)
 
-    BLOCK_D = dim
-    BLOCK_H = group_size if group_size > 16 else 16
-    grid = (batch, heads_kv, num_splits)
-    _split_kernel[grid](
-        q,
-        k_cache,
-        v_cache,
-        cache_seqlens,
-        max_cache_seqlen,
-        o_partial,
-        meta_data,
-        block_mask,
-        sm_scale,
-        num_splits,
-        group_size,
-        q.stride(0), q.stride(1), q.stride(2),
-        k_cache.stride(0), k_cache.stride(1), k_cache.stride(2), k_cache.stride(3),
-        v_cache.stride(0), v_cache.stride(1), v_cache.stride(2), v_cache.stride(3),
-        o_partial.stride(0), o_partial.stride(1), o_partial.stride(2), o_partial.stride(3),
-        meta_data.stride(0), meta_data.stride(1), meta_data.stride(2), meta_data.stride(3),
-        block_mask.stride(0), block_mask.stride(1), block_mask.stride(2),
-        first_block_unmasked=first_block_unmasked,
-        BLOCK_H=BLOCK_H,
-        BLOCK_N=block_size,
-        BLOCK_D=BLOCK_D,
-    )
-    output = torch.zeros((batch, heads, dim_v), device=q.device, dtype=q.dtype)
-    grid = (batch, heads)
-    _merge_kernel[grid](
-        o_partial,
-        meta_data,
-        output,
-        meta_data.stride(0), meta_data.stride(1), meta_data.stride(2), meta_data.stride(3),
-        o_partial.stride(0), o_partial.stride(1), o_partial.stride(2), o_partial.stride(3),
-        output.stride(0), output.stride(1), output.stride(2),
-        BLOCK_D=dim_v,
-        num_splits=num_splits,
-        num_splits_pow2=num_splits_pow2,
-    )
+    with torch.cuda.device(q.device.index):
+        BLOCK_D = dim
+        BLOCK_H = group_size if group_size > 16 else 16
+        grid = (batch, heads_kv, num_splits)
+        _split_kernel[grid](
+            q,
+            k_cache,
+            v_cache,
+            cache_seqlens,
+            max_cache_seqlen,
+            o_partial,
+            meta_data,
+            block_mask,
+            sm_scale,
+            num_splits,
+            group_size,
+            q.stride(0), q.stride(1), q.stride(2),
+            k_cache.stride(0), k_cache.stride(1), k_cache.stride(2), k_cache.stride(3),
+            v_cache.stride(0), v_cache.stride(1), v_cache.stride(2), v_cache.stride(3),
+            o_partial.stride(0), o_partial.stride(1), o_partial.stride(2), o_partial.stride(3),
+            meta_data.stride(0), meta_data.stride(1), meta_data.stride(2), meta_data.stride(3),
+            block_mask.stride(0), block_mask.stride(1), block_mask.stride(2),
+            first_block_unmasked=first_block_unmasked,
+            BLOCK_H=BLOCK_H,
+            BLOCK_N=block_size,
+            BLOCK_D=BLOCK_D,
+        )
+        output = torch.zeros((batch, heads, dim_v), device=q.device, dtype=q.dtype)
+        grid = (batch, heads)
+        _merge_kernel[grid](
+            o_partial,
+            meta_data,
+            output,
+            meta_data.stride(0), meta_data.stride(1), meta_data.stride(2), meta_data.stride(3),
+            o_partial.stride(0), o_partial.stride(1), o_partial.stride(2), o_partial.stride(3),
+            output.stride(0), output.stride(1), output.stride(2),
+            BLOCK_D=dim_v,
+            num_splits=num_splits,
+            num_splits_pow2=num_splits_pow2,
+        )
     if debug:
         return output, o_partial, meta_data
     return output
