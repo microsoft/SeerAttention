@@ -178,7 +178,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         seerattn_last_block_dense=True,
         seerattn_prefill=False,
         seerattn_decode=True,
-        seerattn_use_oracle_sparse=False,
+        seerattn_implementation="seer_sparse", # [seer_sparse, seer_dense, oracle_sparse]
         seerattn_output_sparsity=False,
         **kwargs,
     ):
@@ -214,7 +214,8 @@ class SeerAttnQwen2Config(PretrainedConfig):
         self.seerattn_k_seq_pooling_type = seerattn_k_seq_pooling_type  # Kmaxminavg
 
         self.seerattn_q_head_pooling_type = seerattn_q_head_pooling_type
-        assert self.seerattn_q_head_pooling_type in ['Qproj', 'Qavgproj', 'Qavg']
+        
+        
         
         self.seerattn_training_threshold = seerattn_training_threshold
         self.seerattn_gate_hidden_size = seerattn_gate_hidden_size    
@@ -223,9 +224,10 @@ class SeerAttnQwen2Config(PretrainedConfig):
         self.seerattn_last_block_dense = seerattn_last_block_dense
         self.seerattn_prefill = seerattn_prefill
         self.seerattn_decode = seerattn_decode
-        self.seerattn_use_oracle_sparse = seerattn_use_oracle_sparse
+        self.seerattn_implementation = seerattn_implementation
         self.seerattn_output_sparsity = seerattn_output_sparsity
-        
+        assert self.seerattn_q_head_pooling_type in ['Qproj', 'Qavgproj', 'Qavg']
+        assert self.seerattn_implementation in ['seer_sparse', 'seer_dense', 'oracle_sparse']
         assert self.seerattn_sparsity_method in ['threshold', 'nz_ratio']
         assert self.seerattn_gate_hidden_size in [64, 128, 256]
         assert self.seerattn_gate_block_size in [16, 32, 64]

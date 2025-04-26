@@ -1,0 +1,40 @@
+model_dir="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+output_dir="./result_dense"
+task=olympiadbench # aime math gpqa olympiadbench
+
+bs=60
+limit=-1
+repeat=1
+
+use_batch_exist=1
+attention_implementation=seer_dense # fa2 seer_sparse seer_dense
+
+for gpu in 0 1 2 3
+do
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    python eval.py \
+        --model_name_or_path $model_dir \
+        --data_name $task \
+        --batch_size $bs \
+        --limit $limit \
+        --repeat $repeat \
+        --output_dir $output_dir \
+        --attention_implementation $attention_implementation \
+        --use_batch_exist $use_batch_exist \
+        --surround_with_messages  \
+        --rank $gpu &
+done
+wait
+
+echo "All generation finished"
+
+for gpu in 0 1 2 3
+do
+    python get_results.py \
+        --data_name $task \
+        --limit $limit \
+        --repeat $repeat \
+        --output_dir ${output_dir}/rank${rank} \
+done
+
+echo "All finished"

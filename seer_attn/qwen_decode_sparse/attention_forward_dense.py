@@ -6,8 +6,7 @@ import torch.nn.functional as F
 
 from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
 from flash_attn import flash_attn_func, flash_attn_varlen_func, flash_attn_with_kvcache
-from seer_attn.kernels.varlen.block_sparse_flash_decode_varlen_mask_leftpad import block_sparse_flash_decode_leftpad_gqa_mask
-import os
+from seer_attn.kernels.varlen.flash_decode_varlen_left_pad_max_v2 import flash_decode_leftpad
 
 def _get_unpad_data(attention_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, int]:
     """
@@ -108,7 +107,7 @@ def _upad_input(
         (max_seqlen_in_batch_q, max_seqlen_in_batch_k),
     )
 
-def sparse_flash_attention_forward(
+def dense_flash_attention_forward(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
@@ -116,10 +115,24 @@ def sparse_flash_attention_forward(
     query_length: int,
     softmax_scale: Optional[float] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
-    block_mask: Optional[torch.Tensor] = None,
-    block_size: Optional[int] = None,
     **kwargs,
 ):
+    """
+    Calls the forward method of Flash Attention - if the input hidden states contain at least one padding token
+    first unpad the input, then computes the attention scores and pad the final attention scores.
+
+    Args:
+        query_states (`torch.Tensor`):
+            Input query states to be passed to Flash Attention API
+        key_states (`torch.Tensor`):
+            Input key states to be passed to Flash Attention API
+        value_states (`torch.Tensor`):
+            Input value states to be passed to Flash Attention API
+        attention_mask (`torch.Tensor`, *optional*):
+            The padding mask - corresponds to a tensor of size `(batch_size, seq_len)` where 0 stands for the
+            position of padding tokens and 1 for the position of non-padding tokens.
+
+    """
 
     if query_length > 1:
         # assert attention_mask is not None, "Attention mask must be provided for Flash Attention."
@@ -148,17 +161,12 @@ def sparse_flash_attention_forward(
         attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
     else:
 
-        attn_output = block_sparse_flash_decode_leftpad_gqa_mask(
+        attn_output = flash_decode_leftpad(
             query_states, # [batch_size, num_heads, head_dim] or [batch_size, 1, num_heads, head_dim]
             key_states, # [batch_size, max_cache_len, num_key_value_heads, head_dim]
             value_states, # [batch_size, max_cache_len, num_key_value_heads, head_dim]
             cache_seqlens=cache_seqlens, # [batch_size]
-            block_mask=block_mask,
-            block_size=block_size,
             sm_scale=softmax_scale,
-            first_block_unmasked=True,
         )
 
     return attn_output
-
-

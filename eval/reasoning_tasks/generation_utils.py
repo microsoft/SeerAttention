@@ -20,7 +20,10 @@ def batch_exist_generate(
     # Initialize variables
     generation_config, model_kwargs = model._prepare_generation_config(None)
     generated = input_ids
-    eos_token_id = generation_config.eos_token_id
+    if isinstance(generation_config.eos_token_id, list):
+        eos_token_id = generation_config.eos_token_id[0]
+    else:
+        eos_token_id = generation_config.eos_token_id
     initial_batch_size = input_ids.shape[0]
 
     device = input_ids.device
@@ -70,7 +73,10 @@ def batch_exist_generate(
 
 
         # Update finished flags for the active sequences.
-        finished[cur_to_orig] |= (next_tokens.squeeze(1) == eos_token_id)
+        if isinstance(generation_config.eos_token_id, list):
+            finished[cur_to_orig] |= (next_tokens.squeeze(1) in generation_config.eos_token_id)
+        else:
+            finished[cur_to_orig] |= (next_tokens.squeeze(1) == eos_token_id)
 
         # If all sequences are finished, break.
         if finished.all():
