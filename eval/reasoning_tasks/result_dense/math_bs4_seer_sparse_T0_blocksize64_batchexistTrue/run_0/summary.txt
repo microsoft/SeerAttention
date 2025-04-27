@@ -1,0 +1,30 @@
+Acc: 1.0000
+Average generate length: 1526.25
+Max generate length: 1980
+Total time: 2.43
+Average time per token: 0.0003977364755672671
+
+Acc: 1.0000
+Average generate length: 1526.25
+Max generate length: 1980
+Total time: 2.43
+Average time per token: 0.0003977364755672671
+
+Acc: 0.0080
+Average generate length: 1526.25
+Max generate length: 1980
+Total time: 2.43
+Average time per token: 0.0003977364755672671
+
+Acc: 0.0080
+Average generate length: 1526.25
+Max generate length: 1980
+Total time: 2.43
+Average time per token: 0.0003977364755672671
+
+Acc: 1.0000
+Average generate length: 1526.25
+Max generate length: 1980
+Total time: 2.43
+Average time per token: 0.0003977364755672671
+
