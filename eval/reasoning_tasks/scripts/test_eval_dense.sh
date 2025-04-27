@@ -1,6 +1,6 @@
 model_dir="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
 output_dir="./dense_eval"
-limit=2
+limit=-1
 num_gpus=8
 
 # use_batch_exist_options=("true" "false")
@@ -20,8 +20,8 @@ for task in "${tasks[@]}"; do
               repeat=16
               ;;
           math)
-              bs=2
-              repeat=2
+              bs=250
+              repeat=1
               ;;
           gpqa)
               bs=100   
