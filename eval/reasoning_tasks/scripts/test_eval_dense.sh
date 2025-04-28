@@ -8,7 +8,7 @@ use_batch_exist_options=("true")
 # tasks=("aime" "math" "gpqa" "olympiadbench")
 tasks=("math")
 # attention_implementations=("oracle_sparse" "fa2" "seer_dense")
-attention_implementations=("oracle_sparse")
+attention_implementations=("fa2")
 
 for task in "${tasks[@]}"; do
   for use_batch_exist in "${use_batch_exist_options[@]}"; do
@@ -45,21 +45,24 @@ for task in "${tasks[@]}"; do
       echo "Starting task: $task | use_batch_exist: $use_batch_exist | attention: $attention_implementation"
       echo "Batch size: $bs | Repeat: $repeat "
 
-      for ((gpu=0; gpu<num_gpus; gpu++)); do
-          PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-          python eval.py \
-              --model_name_or_path $model_dir \
-              --data_name $task \
-              --batch_size $bs \
-              --limit $limit \
-              --repeat $repeat \
-              --output_dir $output_dir \
-              --attention_implementation $attention_implementation \
-              --use_batch_exist $use_batch_exist \
-              --surround_with_messages \
-              --rank $gpu &
+      for ((repeat_i=0; repeat_i<repeat; repeat_i++)); do
+        for ((gpu=0; gpu<num_gpus; gpu++)); do
+            PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+            python eval.py \
+                --model_name_or_path $model_dir \
+                --data_name $task \
+                --batch_size $bs \
+                --limit $limit \
+                --repeat $repeat \
+                --repeat_i $repeat_i \
+                --output_dir $output_dir \
+                --attention_implementation $attention_implementation \
+                --use_batch_exist $use_batch_exist \
+                --surround_with_messages \
+                --rank $gpu &
+        done
+        wait
       done
-      wait
 
       python get_results.py \
           --model_name_or_path $model_dir \
