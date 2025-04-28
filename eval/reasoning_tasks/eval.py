@@ -142,6 +142,7 @@ def get_three_prompt(prompt_type, data_name):
 
 
 def infer(args):
+    print(args)
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
     device = f"cuda:{args.rank}"

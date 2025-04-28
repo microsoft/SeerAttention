@@ -65,7 +65,7 @@ def parse_args():
     return args
 
 
-def infer(args):
+def get_results(args):
     print(args)
     generate_lens = []
     examples = load_data(args.data_name, args.split, args.data_dir)
@@ -192,4 +192,4 @@ def infer(args):
 if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     args = parse_args()
-    infer(args)
+    get_results(args)
