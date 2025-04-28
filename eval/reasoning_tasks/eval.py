@@ -298,8 +298,8 @@ def infer(args):
 
             for j in range(len(outputs)):
                 output_seq = outputs[j]
-                output_tokens = (output_seq != tokenizer.pad_token_id).sum().item()
-                prompt_tokens = (batch_input_ids[j] != tokenizer.pad_token_id).sum().item()
+                output_tokens = (output_seq != tokenizer.eos_token_id).sum().item()
+                prompt_tokens = (batch_input_ids[j] != tokenizer.eos_token_id).sum().item()
                 generate_lens.append(output_tokens - prompt_tokens)
 
             batch_results = tokenizer.batch_decode(outputs, skip_special_tokens=True)

@@ -20,6 +20,7 @@ def batch_exist_generate(
     # Initialize variables
     generation_config, model_kwargs = model._prepare_generation_config(None)
     generated = input_ids
+
     if isinstance(generation_config.eos_token_id, list):
         eos_token_id = generation_config.eos_token_id[0]
         eos_token_ids = torch.tensor(generation_config.eos_token_id, device=input_ids.device)
