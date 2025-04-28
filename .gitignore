@@ -400,6 +400,7 @@ FodyWeavers.xsd
 
 checkpoints*
 results*
+result*
 blob*
 amlt*
 .amlt*
@@ -410,3 +411,4 @@ sing*
 test_script.sh
 cache_dir
 *.egg-info
+eval_dense*

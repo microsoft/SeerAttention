@@ -20,8 +20,10 @@ def batch_exist_generate(
     # Initialize variables
     generation_config, model_kwargs = model._prepare_generation_config(None)
     generated = input_ids
+
     if isinstance(generation_config.eos_token_id, list):
         eos_token_id = generation_config.eos_token_id[0]
+        eos_token_ids = torch.tensor(generation_config.eos_token_id, device=input_ids.device)
     else:
         eos_token_id = generation_config.eos_token_id
     initial_batch_size = input_ids.shape[0]
@@ -74,7 +76,7 @@ def batch_exist_generate(
 
         # Update finished flags for the active sequences.
         if isinstance(generation_config.eos_token_id, list):
-            finished[cur_to_orig] |= (next_tokens.squeeze(1) in generation_config.eos_token_id)
+            finished[cur_to_orig] |= torch.isin(next_tokens.squeeze(1), eos_token_ids)
         else:
             finished[cur_to_orig] |= (next_tokens.squeeze(1) == eos_token_id)
 
