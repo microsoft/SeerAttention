@@ -31,6 +31,14 @@ def calculate_average_percentage(sparsitys):
 def parse_list(arg):
     return arg.split(',')
 
+def str_to_bool(s):
+    s = s.lower() 
+    if s in ['true', '1', 'yes']:
+        return True
+    elif s in ['false', '0', 'no']:
+        return False
+    else:
+        raise ValueError(f"Invalid boolean value: {s}")
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -47,7 +55,7 @@ def parse_args():
     parser.add_argument("--block_size", default=64, type=int)
     parser.add_argument("--repeat", default=1, type=int)
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
-    parser.add_argument("--use_batch_exist", default=True, type=bool)
+    parser.add_argument("--use_batch_exist", default=True, type=str_to_bool)
     parser.add_argument("--use_fused_kernel", action="store_true")
     parser.add_argument("--profile_sparsity", action="store_true")
     parser.add_argument("--rank", default=0, type=int)
