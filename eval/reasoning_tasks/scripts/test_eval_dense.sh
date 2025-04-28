@@ -17,7 +17,7 @@ for task in "${tasks[@]}"; do
       case $task in
           aime)
               bs=30
-              repeat=16
+              repeat=8
               ;;
           math)
               bs=250
