@@ -1,6 +1,0 @@
-Acc: 1.0000
-Average generate length: 3146.5
-Max generate length: 4808
-Total time: 6.26
-Average time per token: 0.0009944561862788959
-
