@@ -158,7 +158,6 @@ def infer(args):
     limit = args.limit
     if limit > 0:
         examples = examples[:limit]
-    examples = examples * args.repeat
     
     if args.profile_sparsity:
         assert args.attention_implementation in ["seer_sparse", "oracle_sparse"], "profile_sparsity only support seer_sparse and oracle_sparse"

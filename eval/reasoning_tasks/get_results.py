@@ -107,6 +107,8 @@ def get_results(args):
 
         # check all the correct
         correct_cnt = 0
+        print("len(completions)",len(completions))
+        print("len(examples)",len(examples))
         for i in range(len(completions)):
             d = examples[i]
             gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
