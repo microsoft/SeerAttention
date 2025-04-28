@@ -281,8 +281,6 @@ def infer(args):
                     )
 
             else:
-                print("test1")
-                print("bs:", args.batch_size)
                 outputs = model.generate(
                     input_ids=batch_input_ids,
                     attention_mask=attention_mask,
