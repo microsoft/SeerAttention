@@ -20,7 +20,6 @@ def calculate_average_percentage(sparsitys):
     activate_block = 0
     original_block = 0
 
-
     for activate_block_count, original_block_count in sparsitys:
         activate_block += activate_block_count
         original_block += original_block_count
@@ -28,17 +27,10 @@ def calculate_average_percentage(sparsitys):
     # average_percentage_weighted = weighted_sum / total_weight
     return activate_block, original_block
 
+
 def parse_list(arg):
     return arg.split(',')
 
-def str_to_bool(s):
-    s = s.lower() 
-    if s in ['true', '1', 'yes']:
-        return True
-    elif s in ['false', '0', 'no']:
-        return False
-    else:
-        raise ValueError(f"Invalid boolean value: {s}")
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -53,19 +45,19 @@ def parse_args():
     parser.add_argument("--output_dir", default="./outputs", type=str)
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--block_size", default=64, type=int)
-    parser.add_argument("--repeat", default=1, type=int)
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
-    parser.add_argument("--use_batch_exist", default=True, type=str_to_bool)
+    parser.add_argument("--use_vllm", action="store_true")
+    parser.add_argument("--use_batch_exist", action="store_true")
     parser.add_argument("--use_fused_kernel", action="store_true")
     parser.add_argument("--profile_sparsity", action="store_true")
     parser.add_argument("--rank", default=0, type=int)
-    parser.add_argument("--num_gpus", default=0, type=int)
+    parser.add_argument("--total_run", default=1, type=int)
     args = parser.parse_args()
     
     return args
 
 
-def get_results(args):
+def infer(args):
     print(args)
     generate_lens = []
     examples = load_data(args.data_name, args.split, args.data_dir)
@@ -76,15 +68,18 @@ def get_results(args):
     limit = args.limit
     if limit > 0:
         examples = examples[:limit]
-
-    output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}")
+    
+    if args.use_vllm:
+        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_vllm_dense")
+    else:
+        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}")
 
     Acc_list = []
     generate_lens_list = []
     total_time_list = []
     overall_sparsity_list = []
 
-    num_runs = args.repeat * args.num_gpus
+    num_runs = args.total_run
     for i in range(num_runs):
         output_runnum_subdir = os.path.join(output_config_subdir, f"run_{i}")
 
@@ -107,8 +102,6 @@ def get_results(args):
 
         # check all the correct
         correct_cnt = 0
-        print("len(completions)",len(completions))
-        print("len(examples)",len(examples))
         for i in range(len(completions)):
             d = examples[i]
             gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
@@ -130,7 +123,7 @@ def get_results(args):
         
 
         Acc_list.append(Acc)
-        generate_lens_list += generate_lens
+        generate_lens_list.extend(generate_lens)
         total_time_list.append(total_time)
         if args.profile_sparsity:
             overall_sparsity_list.append(overall_sparsity)
@@ -138,6 +131,7 @@ def get_results(args):
         summary_filepath = os.path.join(output_runnum_subdir, "summary.txt")
 
         with open(summary_filepath, "a") as f:
+            f.write(f"Model Path: {args.model_name_or_path}\n")
             f.write(f"Acc: {Acc:.4f}\n")
             f.write(f"Average generate length: {average_generate_len}\n")
             f.write(f"Max generate length: {max_generate_len}\n")
@@ -172,6 +166,8 @@ def get_results(args):
 
     overall_summary_filepath = os.path.join(output_config_subdir, "overall_summary.txt")
     with open(overall_summary_filepath, "a") as f:
+        f.write(f"Model Path: {args.model_name_or_path}\n")
+        f.write(f"Total_run: {num_runs}\n")
         f.write(f"Acc: {Acc:.4f}\n")
         f.write(f"Average generate length: {average_generate_len}\n")
         f.write(f"Max generate length: {max_generate_len}\n")
@@ -184,14 +180,10 @@ def get_results(args):
 
     print("Results saved to ", overall_summary_filepath)
 
-    
 
-
-
-    
 
 
 if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     args = parse_args()
-    get_results(args)
+    infer(args)

@@ -69,15 +69,6 @@ def calculate_overall_sparsity(
 def parse_list(arg):
     return arg.split(',')
 
-def str_to_bool(s):
-    s = s.lower() 
-    if s in ['true', '1', 'yes']:
-        return True
-    elif s in ['false', '0', 'no']:
-        return False
-    else:
-        raise ValueError(f"Invalid boolean value: {s}")
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -97,13 +88,12 @@ def parse_args():
     parser.add_argument("--output_dir", default="./outputs", type=str)
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--block_size", default=64, type=int)
-    parser.add_argument("--repeat", default=1, type=int)
-    parser.add_argument("--repeat_i", default=0, type=int)
     parser.add_argument("--rank", default=0, type=int)
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
-    parser.add_argument("--use_batch_exist", default=True, type=str_to_bool)
+    parser.add_argument("--use_batch_exist", action="store_true")
     parser.add_argument("--use_fused_kernel", action="store_true")
     parser.add_argument("--profile_sparsity", action="store_true")
+    parser.add_argument("--run_id", default=0, type=int)
     args = parser.parse_args()
     
     return args
@@ -143,7 +133,6 @@ def get_three_prompt(prompt_type, data_name):
 
 
 def infer(args):
-    print(args)
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
     device = f"cuda:{args.rank}"
@@ -238,11 +227,10 @@ def infer(args):
     output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}")
     os.makedirs(output_config_subdir, exist_ok=True)
 
-
-    run_num = args.rank * args.repeat + args.repeat_i
+    # run_num = args.rank * args.repeat + repeat_i
     generate_lens = []
     
-    output_runnum_subdir = os.path.join(output_config_subdir, f"run_{run_num}")
+    output_runnum_subdir = os.path.join(output_config_subdir, f"run_{args.run_id}")
     os.makedirs(output_runnum_subdir, exist_ok=True)
 
     completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
@@ -299,48 +287,51 @@ def infer(args):
 
         for j in range(len(outputs)):
             output_seq = outputs[j]
-            output_tokens = (output_seq != tokenizer.eos_token_id).sum().item()
-            prompt_tokens = (batch_input_ids[j] != tokenizer.eos_token_id).sum().item()
+            output_tokens = (output_seq != tokenizer.pad_token_id).sum().item()
+            prompt_tokens = (batch_input_ids[j] != tokenizer.pad_token_id).sum().item()
             generate_lens.append(output_tokens - prompt_tokens)
 
         batch_results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
         completions.extend(batch_results)
         print("finish batch: ", i, flush=True)
-    
-    end = time.time()
-    total_time = (end - begin) / 60
-    print("llm generate done")
-
-    if args.profile_sparsity:
-        total_activate_count, total_original_count, overall_sparsity_ratio = calculate_overall_sparsity(all_batch_sparsitys_info)
-        print("Overall_sparsity: ", overall_sparsity_ratio)
-        
-    
-    with open(completion_filepath, 'w') as f:
-        json.dump(completions, f)
         
 
-    if args.profile_sparsity:
-        sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
-        with open(sparsity_info_filepath, 'w') as f:
-            json.dump(sparsity_info, f)
 
-    if args.profile_sparsity:
-        other_info = {
-            "generate_lens": generate_lens,
-            "total_time": total_time,
-            "overall_sparsity": overall_sparsity_ratio,
-        }
-    else:
-        other_info = {
-            "generate_lens": generate_lens,
-            "total_time": total_time,
-        }
+
+        end = time.time()
+        total_time = (end - begin) / 60
+        print("llm generate done")
+
+        if args.profile_sparsity:
+            total_activate_count, total_original_count, overall_sparsity_ratio = calculate_overall_sparsity(all_batch_sparsitys_info)
+            print("Overall_sparsity: ", overall_sparsity_ratio)
+            
         
-    with open(other_info_filepath, 'w') as f:
-        json.dump(other_info, f)
-    
-    print(f"Successfully saved run{run_num}")
+        with open(completion_filepath, 'w') as f:
+            json.dump(completions, f)
+            
+
+        if args.profile_sparsity:
+            sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
+            with open(sparsity_info_filepath, 'w') as f:
+                json.dump(sparsity_info, f)
+
+        if args.profile_sparsity:
+            other_info = {
+                "generate_lens": generate_lens,
+                "total_time": total_time,
+                "overall_sparsity": overall_sparsity_ratio,
+            }
+        else:
+            other_info = {
+                "generate_lens": generate_lens,
+                "total_time": total_time,
+            }
+            
+        with open(other_info_filepath, 'w') as f:
+            json.dump(other_info, f)
+        
+        print(f"Successfully saved run{args.run_id}!")
 
     
 

@@ -5,5 +5,5 @@ This math evaluation framework is modified from [LIMO](https://github.com/GAIR-N
 
 ```bash
     pip install -r requirements.txt
-    bash scripts/test_eval.sh ## Now support batched eval
+    bash scripts/test_eval_dense.sh ## Now support batched eval
 ```
