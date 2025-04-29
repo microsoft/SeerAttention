@@ -20,7 +20,7 @@ def Choose_task_config(model_size):
     elif model_size == "14B":
         task_config = {
             "aime": {"bs": 30, "total_run": 64},
-            "math": {"bs": 4, "total_run": 4},
+            "math": {"bs": 4, "total_run": 8},
             "gpqa": {"bs": 100, "total_run": 16},
             "olympiadbench": {"bs": 60, "total_run": 8}
         }
@@ -58,7 +58,9 @@ if __name__ == "__main__":
 
     model_dir = args.model_dir
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
-    thresholds = [t.strip() for t in args.threshold.split(",") if t.strip()]
+    sparsity_method = args.sparsity_method
+    print(f"Using sparsity method: {sparsity_method}")
+    token_budgets = [t.strip() for t in args.token_budget.split(",") if t.strip()]
 
     model_subfolder = os.path.basename(model_dir.rstrip('/'))
     output_dir = os.path.join(args.output_dir, model_subfolder)
@@ -77,8 +79,8 @@ if __name__ == "__main__":
         print(f"Starting task: {task}  | attention: {attention_implementations}")
         print(f"Batch size: {bs} | total_run: {total_run}")
 
-        for threshold in thresholds:
-            print(f"--- Starting evaluation for threshold: {threshold} ---")
+        for token_budget in token_budgets:
+            print(f"--- Starting evaluation for token_budget: {token_budget} ---")
             
             # --- MODIFICATION START ---
             # Keep track of active processes and the GPU they are assigned to
@@ -137,7 +139,8 @@ if __name__ == "__main__":
                         "--surround_with_messages",
                         # Pass the assigned GPU ID. Ensure eval.py uses this to select the device.
                         "--rank", str(gpu_id), 
-                        "--threshold", threshold,
+                        "--sparsity_method", sparsity_method,
+                        "--token_budget", str(token_budget),
                         "--run_id", str(current_run_id), # Pass the unique run ID
                     ]
                     if args.profile_sparsity:
@@ -157,7 +160,7 @@ if __name__ == "__main__":
 
             # --- Original wait loop removed as the logic is integrated above ---
 
-            print(f"All {total_run} runs for threshold {threshold} completed.")
+            print(f"All {total_run} runs for token_budget {token_budget} completed.")
 
             # --- Run get_results.py (unchanged) ---
             get_results_cmd = [
@@ -170,17 +173,18 @@ if __name__ == "__main__":
                 "--attention_implementation", attention_implementations,
                 "--use_batch_exist",
                 "--total_run", str(total_run),
-                "--threshold", threshold
+                "--sparsity_method", sparsity_method,
+                "--token_budget", str(token_budget),
             ]
             if args.profile_sparsity:
                 get_results_cmd.append("--profile_sparsity")
 
             try:
                 subprocess.run(get_results_cmd, check=True)
-                print(f"--- Successfully generated results for threshold: {threshold} ---")
+                print(f"--- Successfully generated results for token_budget: {token_budget} ---")
             except subprocess.CalledProcessError as e:
-                print(f"--- Error running get_results.py for threshold {threshold}: {e} ---")
-                # Decide if you want to exit or continue with the next threshold/task
+                print(f"--- Error running get_results.py for token_budget {token_budget}: {e} ---")
+                # Decide if you want to exit or continue with the next token_budget/task
                 # sys.exit(1) 
 
         print(f"Completed: {task}-{attention_implementations}")

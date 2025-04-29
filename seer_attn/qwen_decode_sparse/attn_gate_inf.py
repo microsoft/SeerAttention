@@ -53,6 +53,20 @@ def get_sparse_attn_mask_from_threshold(x, threshold):
     dense_mask = x > threshold 
     return  dense_mask
 
+def get_sparse_attn_mask_from_budget(x, block_budget, block_attention_mask):
+
+    if x.shape[-1] <= block_budget:
+        full_mask = torch.ones_like(x, dtype=torch.bool, device=x.device)
+        full_mask = full_mask & block_attention_mask
+        return full_mask
+    mask = torch.zeros_like(x, dtype=torch.bool, device=x.device)
+    _, topk_indices = torch.topk(x, k=block_budget, dim=-1, sorted=False)
+    mask.scatter_(-1, topk_indices, True)
+
+    mask = mask & block_attention_mask
+
+    
+    return mask
 
 class HeadPoolingLinear(nn.Module):
     def __init__(self, num_k_head, gqa_group_size, model_hidden_size, gate_hidden_size):
@@ -111,6 +125,7 @@ class AttnGate(nn.Module):
                  q_head_pooling_type, 
                  k_pooling_funcs,
                  use_flash_rope,
+
                 ):
         super(AttnGate, self).__init__()
         self.block_size = block_size
@@ -146,7 +161,9 @@ class AttnGate(nn.Module):
             max_cache_len=None,
             position_embeddings=None,
             block_position_embeddings=None, 
+            sparsity_method=None,
             threshold=0.0,
+            block_budget=32,
         ):  
         """
         This attngate module is only used in inference. 
@@ -162,10 +179,20 @@ class AttnGate(nn.Module):
             threshold: Threshold for attention mask.
         """
 
-        is_decode = k.shape[1] == 1        
+        is_decode = k.shape[1] == 1 
+        batch_size, _, num_kv_heads, _ = k.shape 
+        kv_len = attention_mask.shape[-1]
+        # print("sparsity_method:", sparsity_method)      
 
         if is_decode:
             assert q.dim() == 4
+            # if sparsity_method == "token_budget":
+            #     if kv_len <= self.block_size * block_budget:
+            #         print("kv_len:",kv_len)
+            #         print("token_budget:", self.block_size * block_budget)
+            #         full_mask = torch.ones((batch_size, num_kv_heads, math.ceil(kv_len / self.block_size)), dtype=torch.bool, device=q.device)
+            #         full_mask = full_mask & attention_mask
+            #     return full_mask
 
             if self.q_head_pooling_type == "Qavgproj" or self.q_head_pooling_type == "Qavg":
                 q = F.avg_pool2d(q, kernel_size=[self.gqa_group_size, 1], stride=[self.gqa_group_size, 1])
@@ -203,8 +230,15 @@ class AttnGate(nn.Module):
             else:
                 attn = attn + attention_mask
             attn = F.softmax(attn, dim=-1)
-            mask = get_sparse_attn_mask_from_threshold(attn, threshold)
+            
+
+            if sparsity_method == "token_budget":
+                # print("block_budget:", block_budget)
+                mask = get_sparse_attn_mask_from_budget(attn, block_budget, attention_mask)
+            elif sparsity_method == "threshold":
+                mask = get_sparse_attn_mask_from_threshold(attn, threshold)
             mask[:, : ,-1] = True
+
             return mask
         else:
             k_pooled = [pool_func(k, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]

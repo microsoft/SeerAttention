@@ -30,7 +30,7 @@ from transformers.utils import (
 from transformers.utils.deprecation import deprecate_kwarg
 from seer_attn.qwen_decode_sparse.configuration_qwen2_seerattn import SeerAttnQwen2Config
 from seer_attn.utils import BaseModelOutputWithPastAndCache, CausalLMOutputWithPastAndCache
-from seer_attn.qwen_decode_sparse.attn_gate_inf import ATTNGATE_CLASSES
+from seer_attn.qwen_decode_sparse.attn_gate_inf import ATTNGATE_CLASSES, get_sparse_attn_mask_from_threshold, get_sparse_attn_mask_from_budget
 import copy, math, os
 from einops import rearrange
 from seer_attn.qwen_decode_sparse.attention_forward_sparse import sparse_flash_attention_forward
@@ -77,7 +77,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
-def compute_oracle_sparse_mask(q, k, attention_mask, block_size, threshold):
+def compute_oracle_sparse_mask(q, k, attention_mask, block_attention_mask, block_size, sparsity_method, threshold=0.0, block_budget=2048):
     batch_size, q_len, num_q_heads, head_dim = q.shape
     _, kv_len, num_kv_heads, _ = k.shape
     num_gqa_groups = num_q_heads // num_kv_heads
@@ -85,6 +85,11 @@ def compute_oracle_sparse_mask(q, k, attention_mask, block_size, threshold):
     if q_len > 1: # use dense prefill for sparse decode
         block_sparse_mask = None
     else:
+        # if sparsity_method == "token_budget":
+        #     if kv_len <= block_size*block_budget:
+        #         full_mask = torch.ones((batch_size, num_kv_heads, math.ceil(kv_len/block_size)), dtype=torch.bool, device=q.device)
+        #         full_mask = full_mask & block_attention_mask
+        #         return full_mask
         q = q.transpose(1, 2) # (b, num_q_heads, q_len, d)
         k = k.transpose(1, 2) # (b, num_kv_heads, kv_len, d)
 
@@ -107,7 +112,12 @@ def compute_oracle_sparse_mask(q, k, attention_mask, block_size, threshold):
 
         attn_weights = F.max_pool2d(attn_weights, kernel_size=(num_gqa_groups, block_size), stride=(num_gqa_groups, block_size), ceil_mode=True)
 
-        block_sparse_mask = attn_weights > threshold  
+        if sparsity_method == "token_budget":
+            block_sparse_mask = get_sparse_attn_mask_from_budget(attn_weights, block_budget, block_attention_mask)
+        elif sparsity_method == "threshold":
+            block_sparse_mask = get_sparse_attn_mask_from_threshold(attn_weights, threshold) 
+
+        block_sparse_mask[:, :, -1] = True
     
     return block_sparse_mask
 
@@ -118,6 +128,8 @@ class Qwen2SeerAttention(nn.Module):
     def __init__(self, config: SeerAttnQwen2Config, layer_idx: int):
         super().__init__()
         self.config = config
+        self.block_budget = self.config.seerattn_token_budget // self.config.seerattn_gate_block_size
+        
         self.layer_idx = layer_idx
         self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
@@ -191,20 +203,26 @@ class Qwen2SeerAttention(nn.Module):
                     q,
                     k,
                     attention_mask,
+                    block_attention_mask,
                     self.config.seerattn_gate_block_size,
+                    self.config.seerattn_sparsity_method,
                     self.config.seerattn_threshold,
+                    self.block_budget,
                 )
             else:
+                max_cache_len = k.shape[1]
                 block_sparse_mask = self.attn_gate(
                     k_nope,
                     self.layer_idx,
                     k_compressed_cache,
                     q_nope,
                     block_attention_mask,
-                    max_cache_len=k.shape[1],
-                    position_embeddings=position_embeddings,
-                    block_position_embeddings=block_position_embeddings,
+                    max_cache_len,
+                    position_embeddings,
+                    block_position_embeddings,
+                    sparsity_method=self.config.seerattn_sparsity_method,
                     threshold=self.config.seerattn_threshold,
+                    block_budget=self.block_budget,
                 )
 
         activate_and_original_block_count = None
@@ -212,6 +230,8 @@ class Qwen2SeerAttention(nn.Module):
             activate_block_count = block_sparse_mask.sum()   # block_sparse_mask in shape batch, kv_heads, seq(block)
             original_block_count = block_attention_mask.sum() * self.config.num_key_value_heads # block_attention_mask in shape batch, 1, seq(block)
             activate_and_original_block_count = (activate_block_count.item(), original_block_count.item())
+            # if self.layer_idx == 0:
+            #     print(f"activate_and_original_block_count: {activate_and_original_block_count}")
 
         if self.config.seerattn_implementation == "seer_dense":
             attn_output = dense_flash_attention_forward(

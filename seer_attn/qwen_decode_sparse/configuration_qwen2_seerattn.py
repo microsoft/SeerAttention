@@ -168,6 +168,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         max_window_layers=28,
         attention_dropout=0.0,
         seerattn_sparsity_method='threshold', ## or nz_ratio
+        seerattn_token_budget=2048,
         seerattn_threshold=0.0,
         seerattn_nz_ratio=1.0,
         seerattn_k_seq_pooling_type='Kmaxminavg',
@@ -209,6 +210,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         
         
         self.seerattn_sparsity_method = seerattn_sparsity_method
+        self.seerattn_token_budget = seerattn_token_budget
         self.seerattn_threshold = seerattn_threshold
         self.seerattn_nz_ratio = seerattn_nz_ratio
         self.seerattn_k_seq_pooling_type = seerattn_k_seq_pooling_type  # Kmaxminavg

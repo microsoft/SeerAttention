@@ -43,7 +43,10 @@ def parse_args():
     parser.add_argument('--start_idx', type=int, default=0, help="data[start:end]")
     parser.add_argument('--end_idx', type=int, default=-1, help="data[start:end], if -1, data[start:]")
     parser.add_argument("--output_dir", default="./outputs", type=str)
+    parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold"], type=str)
     parser.add_argument("--threshold", default=0, type=float)
+    parser.add_argument("--token_budget", default=2048, type=int)
+    parser.add_argument("--sliding_window_size", default=0, type=int)
     parser.add_argument("--block_size", default=64, type=int)
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
     parser.add_argument("--use_vllm", action="store_true")
@@ -71,8 +74,12 @@ def infer(args):
     
     if args.use_vllm:
         output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_vllm_dense")
+    elif args.sparsity_method == "token_budget":
+        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_budget{args.token_budget}_win{args.sliding_window_size}_blocksize{args.block_size}_{args.attention_implementation}")
+    elif args.sparsity_method == "threshold":
+        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_T{args.threshold}_blocksize{args.block_size}_{args.attention_implementation}")
     else:
-        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}")
+        raise ValueError(f"Unknown sparsity method: {args.sparsity_method}")
 
     Acc_list = []
     generate_lens_list = []

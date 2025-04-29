@@ -1,19 +1,19 @@
-task=aime
-bs=30
-threshold=1e-4
-block_size=64
+model_dir="/home/v-shumingguo/gsm_blob/models/DeepSeek-R1-Distill-Qwen-14B"
+output_dir="./result_oracle_sparse"
+model_size="14B"
+attention_implementation="oracle_sparse"
 
-## Dense Baseline
-model_dir="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-CUDA_VISIBLE_DEVICES=3 python eval.py \
-    --model_name_or_path $model_dir \
-    --data_name $task \
-    --batch_size $bs \
-    --limit -1 \
-    --output_dir ./results_oracle_aime \
-    --attention_implementation oracle_sparse \
-    --threshold $threshold \
-    --block_size $block_size \
-    --use_batch_exist \
-    --profile_sparsity \
-    --surround_with_messages
+# tasks="aime,math,gpqa,olympiadbench"
+tasks="math"
+sparsity_method="token_budget"
+token_budget="1536"
+
+python parallel_run_token_budget.py \
+      --model_dir "$model_dir" \
+      --model_size "$model_size" \
+      --tasks "$tasks" \
+      --output_dir "$output_dir" \
+      --attention "$attention_implementation" \
+      --sparsity_method "$sparsity_method" \
+      --token_budget "$token_budget" \
+      --profile_sparsity \

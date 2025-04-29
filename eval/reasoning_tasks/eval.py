@@ -86,7 +86,10 @@ def parse_args():
     parser.add_argument("--surround_with_messages", action="store_true")
     parser.add_argument("--use_few_shot", action="store_true")
     parser.add_argument("--output_dir", default="./outputs", type=str)
+    parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold"], type=str)
+    parser.add_argument("--sliding_window_size", default=0, type=int)
     parser.add_argument("--threshold", default=0, type=float)
+    parser.add_argument("--token_budget", default=2048, type=int)
     parser.add_argument("--block_size", default=64, type=int)
     parser.add_argument("--rank", default=0, type=int)
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
@@ -133,6 +136,7 @@ def get_three_prompt(prompt_type, data_name):
 
 
 def infer(args):
+    print(args)
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
     device = f"cuda:{args.rank}"
@@ -198,7 +202,9 @@ def infer(args):
                                                 device_map=device,
                                                 load_gate = args.attention_implementation == "seer_sparse",
                                                 use_cache=True,
+                                                seerattn_sparsity_method=args.sparsity_method,
                                                 seerattn_threshold=args.threshold,
+                                                seerattn_token_budget=args.token_budget,
                                                 seerattn_gate_block_size=args.block_size,
                                                 seerattn_implementation = args.attention_implementation,
                                                 use_flash_rope=args.use_fused_kernel,
@@ -224,7 +230,13 @@ def infer(args):
     
     model.eval()
 
-    output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}")
+    if args.sparsity_method == "token_budget":
+        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_budget{args.token_budget}_win{args.sliding_window_size}_blocksize{args.block_size}_{args.attention_implementation}")
+    elif args.sparsity_method == "threshold":
+        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_threshold{args.threshold}_blocksize{args.block_size}_{args.attention_implementation}")
+    else:
+        raise ValueError(f"Unknown sparsity method: {args.sparsity_method}")
+
     os.makedirs(output_config_subdir, exist_ok=True)
 
     # run_num = args.rank * args.repeat + repeat_i
