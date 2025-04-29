@@ -1,0 +1,13 @@
+model_dir="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+output_dir="./result_dense"
+model_size="14B"
+attention_implementation="fa2"
+
+tasks="aime,math,gpqa,olympiadbench"
+
+python parallel_run.py \
+      --model_dir "$model_dir" \
+      --tasks "$tasks" \
+      --output_dir "$output_dir" \
+      --attention "$attention_implementation" \
+      --threshold "0" \

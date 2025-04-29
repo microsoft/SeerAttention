@@ -69,45 +69,33 @@ def calculate_overall_sparsity(
 def parse_list(arg):
     return arg.split(',')
 
-def save_completions(completions, filepath):
-    with open(filepath, "a") as f:
-        for completion in completions:
-            f.write(f"completion: {completion}\n")
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name_or_path', type=str, default="./", help="model dir")
-    parser.add_argument('--n_sampling', type=int, default=1, help="n for sampling")
     parser.add_argument('--batch_size', type=int, default=16, help="batch_size")
     parser.add_argument('--limit', type=int, default=-1, help="limit")
-    parser.add_argument('--repeat', type=int, default=1, help="repeat")
-    parser.add_argument("--k", type=int, default=1, help="Value of k for pass@k calculation")
     parser.add_argument("--data_dir", default="./data", type=str)
     parser.add_argument('--data_name', type=str, default="math", help='identify how to extract answer')
     parser.add_argument("--split", default="test", type=str)
     parser.add_argument('--start_idx', type=int, default=0, help="data[start:end]")
     parser.add_argument('--end_idx', type=int, default=-1, help="data[start:end], if -1, data[start:]")
-    parser.add_argument("--temperature", default=0, type=float)
     parser.add_argument("--max_tokens", default=32768, type=int)
     parser.add_argument("--prompt_type", default="qwen-instruct", type=str)
     parser.add_argument("--prompt_file_path", default="./prompts", type=str)
     parser.add_argument("--surround_with_messages", action="store_true")
     parser.add_argument("--use_few_shot", action="store_true")
     parser.add_argument("--output_dir", default="./outputs", type=str)
-    parser.add_argument('--stop', type=parse_list)
-    parser.add_argument("--top_p", default=1, type=float)
-    parser.add_argument("--seed", default=0, type=int)
-    parser.add_argument("--dtype", default='auto', type=str)
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--block_size", default=64, type=int)
     parser.add_argument("--rank", default=0, type=int)
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
-    parser.add_argument("--use_batch_exist", default=True, type=bool)
+    parser.add_argument("--use_batch_exist", action="store_true")
     parser.add_argument("--use_fused_kernel", action="store_true")
     parser.add_argument("--profile_sparsity", action="store_true")
+    parser.add_argument("--run_id", default=0, type=int)
     args = parser.parse_args()
     
-    args.top_p = 1 if args.temperature == 0 else args.top_p # top_p must be 1 when using greedy 
     return args
 
 def get_conversation_prompt_by_messages(tokenizer, messages):
@@ -150,9 +138,6 @@ def infer(args):
     device = f"cuda:{args.rank}"
 
     generate_lens = []
-    prompt_lens = []
-
-    n_sampling = args.n_sampling
     
     examples = load_data(args.data_name, args.split, args.data_dir)
     if args.end_idx == -1:
@@ -162,7 +147,6 @@ def infer(args):
     limit = args.limit
     if limit > 0:
         examples = examples[:limit]
-    examples = examples * args.repeat
     
     if args.profile_sparsity:
         assert args.attention_implementation in ["seer_sparse", "oracle_sparse"], "profile_sparsity only support seer_sparse and oracle_sparse"
@@ -240,17 +224,18 @@ def infer(args):
     
     model.eval()
 
+    output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}")
+    os.makedirs(output_config_subdir, exist_ok=True)
 
+    # run_num = args.rank * args.repeat + repeat_i
     generate_lens = []
-    correct_cnt = 0
-    output_filename = f"{args.data_name}_bs{args.batch_size}_{args.attention_implementation}_T{args.threshold}_blocksize{args.block_size}_batchexist{args.use_batch_exist}.txt"
-    output_dir = os.path.join(args.output_dir, f"rank{args.rank}")
-    os.makedirs(output_dir, exist_ok=True)
-    print("make output dir: ", output_dir)
-    output_path_txt = os.path.join(output_dir, output_filename)
-    completion_filename = output_filename[:-4] + "_completions.json"
-    sparsity_filename = output_filename[:-4] + "_sparsity_info.json"
-    ckpt_filename = output_filename[:-4] + "_ckpt.json"
+    
+    output_runnum_subdir = os.path.join(output_config_subdir, f"run_{args.run_id}")
+    os.makedirs(output_runnum_subdir, exist_ok=True)
+
+    completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
+    sparsity_info_filepath = os.path.join(output_runnum_subdir, "sparsity_info.json")
+    other_info_filepath = os.path.join(output_runnum_subdir, "other_info.json")
 
     completions = []
     batch_size = args.batch_size
@@ -309,43 +294,44 @@ def infer(args):
         batch_results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
         completions.extend(batch_results)
         print("finish batch: ", i, flush=True)
-    
-    end = time.time()
-    total_time = end - begin
-    print("llm generate done")
-
-    if args.profile_sparsity:
-        total_activate_count, total_original_count, overall_sparsity_ratio = calculate_overall_sparsity(all_batch_sparsitys_info)
-        print("Overall_sparsity: ", overall_sparsity_ratio)
-        
-    
-    with open(os.path.join(output_dir, completion_filename), 'w') as f:
-        json.dump(completions, f)
         
 
-    if args.profile_sparsity:
-        sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
-        with open(os.path.join(output_dir, sparsity_filename), 'w') as f:
-            json.dump(sparsity_info, f)
 
-    if args.profile_sparsity:
-        checkpoint_data = {
-            "output_path_txt": output_path_txt,
-            "generate_lens": generate_lens,
-            "total_time": total_time,
-            "overall_sparsity": overall_sparsity_ratio,
-        }
-    else:
-        checkpoint_data = {
-            "output_path_txt": output_path_txt,
-            "generate_lens": generate_lens,
-            "total_time": total_time,
-        }
+
+        end = time.time()
+        total_time = (end - begin) / 60
+        print("llm generate done")
+
+        if args.profile_sparsity:
+            total_activate_count, total_original_count, overall_sparsity_ratio = calculate_overall_sparsity(all_batch_sparsitys_info)
+            print("Overall_sparsity: ", overall_sparsity_ratio)
+            
         
-    with open(os.path.join(output_dir, ckpt_filename), 'w') as f:
-        json.dump(checkpoint_data, f)
-    
-    print("Successfully saved!")
+        with open(completion_filepath, 'w') as f:
+            json.dump(completions, f)
+            
+
+        if args.profile_sparsity:
+            sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
+            with open(sparsity_info_filepath, 'w') as f:
+                json.dump(sparsity_info, f)
+
+        if args.profile_sparsity:
+            other_info = {
+                "generate_lens": generate_lens,
+                "total_time": total_time,
+                "overall_sparsity": overall_sparsity_ratio,
+            }
+        else:
+            other_info = {
+                "generate_lens": generate_lens,
+                "total_time": total_time,
+            }
+            
+        with open(other_info_filepath, 'w') as f:
+            json.dump(other_info, f)
+        
+        print(f"Successfully saved run{args.run_id}!")
 
     
 

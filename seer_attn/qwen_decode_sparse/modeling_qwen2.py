@@ -667,9 +667,10 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         # Initialize variables
         generation_config, model_kwargs = self._prepare_generation_config(None)
         generated = input_ids
-        # eos_token_id = generation_config.eos_token_id
+
         if isinstance(generation_config.eos_token_id, list):
             eos_token_id = generation_config.eos_token_id[0]
+            eos_token_ids = torch.tensor(generation_config.eos_token_id, device=input_ids.device)
         else:
             eos_token_id = generation_config.eos_token_id
         initial_batch_size = input_ids.shape[0]
@@ -730,9 +731,10 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
 
             # Update finished flags for the active sequences.
             if isinstance(generation_config.eos_token_id, list):
-                finished[cur_to_orig] |= (next_tokens.squeeze(1) in generation_config.eos_token_id)
+                finished[cur_to_orig] |= torch.isin(next_tokens.squeeze(1), eos_token_ids)
             else:
                 finished[cur_to_orig] |= (next_tokens.squeeze(1) == eos_token_id)
+            # finished[cur_to_orig] |= (next_tokens.squeeze(1) == eos_token_id)
 
             # If all sequences are finished, break.
             if finished.all():
