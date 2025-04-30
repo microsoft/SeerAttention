@@ -75,7 +75,7 @@ def infer(args):
     if args.use_vllm:
         output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_vllm_dense")
     elif args.sparsity_method == "token_budget":
-        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_budget{args.token_budget}_win{args.sliding_window_size}_blocksize{args.block_size}_{args.attention_implementation}")
+        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_B{args.token_budget}_win{args.sliding_window_size}_blocksize{args.block_size}_{args.attention_implementation}")
     elif args.sparsity_method == "threshold":
         output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_T{args.threshold}_blocksize{args.block_size}_{args.attention_implementation}")
     else:

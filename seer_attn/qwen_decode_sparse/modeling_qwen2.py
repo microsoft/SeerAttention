@@ -77,7 +77,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
-def compute_oracle_sparse_mask(q, k, attention_mask, block_attention_mask, block_size, sparsity_method, threshold=0.0, block_budget=2048):
+def compute_oracle_sparse_mask(q, k, attention_mask, block_attention_mask, block_size, sparsity_method, threshold=0.0, block_budget=2048, block_sliding_window_size=0):
     batch_size, q_len, num_q_heads, head_dim = q.shape
     _, kv_len, num_kv_heads, _ = k.shape
     num_gqa_groups = num_q_heads // num_kv_heads
@@ -113,7 +113,7 @@ def compute_oracle_sparse_mask(q, k, attention_mask, block_attention_mask, block
         attn_weights = F.max_pool2d(attn_weights, kernel_size=(num_gqa_groups, block_size), stride=(num_gqa_groups, block_size), ceil_mode=True)
 
         if sparsity_method == "token_budget":
-            block_sparse_mask = get_sparse_attn_mask_from_budget(attn_weights, block_budget, block_attention_mask)
+            block_sparse_mask = get_sparse_attn_mask_from_budget(attn_weights, block_budget, block_sliding_window_size, block_attention_mask)
         elif sparsity_method == "threshold":
             block_sparse_mask = get_sparse_attn_mask_from_threshold(attn_weights, threshold) 
 
@@ -129,6 +129,7 @@ class Qwen2SeerAttention(nn.Module):
         super().__init__()
         self.config = config
         self.block_budget = self.config.seerattn_token_budget // self.config.seerattn_gate_block_size
+        self.block_sliding_window_size = self.config.seerattn_sliding_window_size // self.config.seerattn_gate_block_size
         
         self.layer_idx = layer_idx
         self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
@@ -208,6 +209,7 @@ class Qwen2SeerAttention(nn.Module):
                     self.config.seerattn_sparsity_method,
                     self.config.seerattn_threshold,
                     self.block_budget,
+                    self.block_sliding_window_size,
                 )
             else:
                 max_cache_len = k.shape[1]
@@ -223,6 +225,7 @@ class Qwen2SeerAttention(nn.Module):
                     sparsity_method=self.config.seerattn_sparsity_method,
                     threshold=self.config.seerattn_threshold,
                     block_budget=self.block_budget,
+                    block_sliding_window_size=self.block_sliding_window_size,
                 )
 
         activate_and_original_block_count = None

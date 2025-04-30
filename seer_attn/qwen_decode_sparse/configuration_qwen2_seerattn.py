@@ -167,7 +167,8 @@ class SeerAttnQwen2Config(PretrainedConfig):
         sliding_window=4096,
         max_window_layers=28,
         attention_dropout=0.0,
-        seerattn_sparsity_method='threshold', ## or nz_ratio
+        seerattn_sparsity_method='threshold', ## or token_budget
+        seerattn_sliding_window_size=0, ## 0 means no sliding window
         seerattn_token_budget=2048,
         seerattn_threshold=0.0,
         seerattn_nz_ratio=1.0,
@@ -210,6 +211,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         
         
         self.seerattn_sparsity_method = seerattn_sparsity_method
+        self.seerattn_sliding_window_size = seerattn_sliding_window_size
         self.seerattn_token_budget = seerattn_token_budget
         self.seerattn_threshold = seerattn_threshold
         self.seerattn_nz_ratio = seerattn_nz_ratio

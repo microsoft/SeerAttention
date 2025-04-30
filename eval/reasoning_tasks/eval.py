@@ -204,6 +204,7 @@ def infer(args):
                                                 use_cache=True,
                                                 seerattn_sparsity_method=args.sparsity_method,
                                                 seerattn_threshold=args.threshold,
+                                                seerattn_sliding_window_size=args.sliding_window_size,
                                                 seerattn_token_budget=args.token_budget,
                                                 seerattn_gate_block_size=args.block_size,
                                                 seerattn_implementation = args.attention_implementation,
@@ -231,9 +232,9 @@ def infer(args):
     model.eval()
 
     if args.sparsity_method == "token_budget":
-        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_budget{args.token_budget}_win{args.sliding_window_size}_blocksize{args.block_size}_{args.attention_implementation}")
+        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_B{args.token_budget}_win{args.sliding_window_size}_blocksize{args.block_size}_{args.attention_implementation}")
     elif args.sparsity_method == "threshold":
-        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_threshold{args.threshold}_blocksize{args.block_size}_{args.attention_implementation}")
+        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_T{args.threshold}_blocksize{args.block_size}_{args.attention_implementation}")
     else:
         raise ValueError(f"Unknown sparsity method: {args.sparsity_method}")
 

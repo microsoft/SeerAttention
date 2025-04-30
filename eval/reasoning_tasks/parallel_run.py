@@ -6,8 +6,8 @@ import argparse
 import time
 from collections import deque # Use deque for efficient pop/append
 
-limit = 4
-num_gpus = 4
+limit = -1
+num_gpus = 8
 
 def Choose_task_config(model_size):
     if model_size == "7B" or model_size == "8B":
@@ -20,7 +20,7 @@ def Choose_task_config(model_size):
     elif model_size == "14B":
         task_config = {
             "aime": {"bs": 30, "total_run": 64},
-            "math": {"bs": 4, "total_run": 4},
+            "math": {"bs": 250, "total_run": 8},
             "gpqa": {"bs": 100, "total_run": 16},
             "olympiadbench": {"bs": 60, "total_run": 8}
         }
@@ -48,6 +48,7 @@ if __name__ == "__main__":
                         help="Directory to store output results")
     parser.add_argument("--attention", type=str, default="seer_sparse",
                         help="attention implementations")
+    parser.add_argument("--block_size", default="64", type=str)
     parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold"], type=str)
     parser.add_argument("--sliding_window_size", default="0", type=str)
     parser.add_argument("--threshold", default="0", type=str)
@@ -58,7 +59,11 @@ if __name__ == "__main__":
 
     model_dir = args.model_dir
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
+    sparsity_method = args.sparsity_method
+    token_budgets = [t.strip() for t in args.token_budget.split(",") if t.strip()]
+    sliding_window_sizes = [s.strip() for s in args.sliding_window_size.split(",") if s.strip()]
     thresholds = [t.strip() for t in args.threshold.split(",") if t.strip()]
+    block_sizes = [b.strip() for b in args.block_size.split(",") if b.strip()]
 
     model_subfolder = os.path.basename(model_dir.rstrip('/'))
     output_dir = os.path.join(args.output_dir, model_subfolder)
@@ -74,115 +79,120 @@ if __name__ == "__main__":
         bs = task_config[task]["bs"]
         total_run = task_config[task]["total_run"]
 
-        print(f"Starting task: {task}  | attention: {attention_implementations}")
+        print(f"\n{'='*40}")
+        print(f"Starting task: {task}")
         print(f"Batch size: {bs} | total_run: {total_run}")
 
-        for threshold in thresholds:
-            print(f"--- Starting evaluation for threshold: {threshold} ---")
+        for block_size in block_sizes:
+            print(f"Block size: {block_size}")
+            if sparsity_method == "token_budget":
+                param_combinations = [
+                    (sw, tb) 
+                    for sw in sliding_window_sizes 
+                    for tb in token_budgets
+                ]
+            elif sparsity_method == "threshold":
+                param_combinations = [
+                    (th,) 
+                    for th in thresholds
+                ]
+
             
-            # --- MODIFICATION START ---
-            # Keep track of active processes and the GPU they are assigned to
-            # Use a dictionary: {process: gpu_id}
-            active_procs = {} 
-            # Keep track of available GPU IDs. Initialize with all GPUs.
-            available_gpus = deque(range(num_gpus)) 
-            # --- MODIFICATION END ---
-
-            # Use a single loop counter for the runs to launch
-            run_counter = 0
-            # Keep track of completed runs to ensure total_run are processed
-            completed_runs = 0 
-
-            # Continue as long as there are runs to launch OR runs still active
-            while run_counter < total_run or active_procs:
-
-                # --- MODIFICATION: Check for finished processes first ---
-                # Use list(active_procs.items()) to avoid RuntimeError: dictionary changed size during iteration
-                for proc, info in list(active_procs.items()):
-                    if proc.poll() is not None:
-                        print(f"Run {info['run_id']} on GPU {info['gpu_id']} finished.")
-                        available_gpus.append(info['gpu_id'])
-                        del active_procs[proc]
-                        completed_runs += 1
-                # --- MODIFICATION END ---
-
-
-                # --- MODIFICATION: Launch new processes if possible ---
-                # Check if there are runs left to launch AND there's an available GPU
-                while run_counter < total_run and available_gpus:
-                    # Get the next available GPU ID
-                    gpu_id = available_gpus.popleft() # Take from the left (FIFO)
-                    
-                    # Assign the current run number
-                    current_run_id = run_counter
-                    run_counter += 1 # Increment the counter for the next potential run
-
-                    print(f"Launching run {current_run_id} on GPU {gpu_id}...")
-
-                    env = os.environ.copy()
-                    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-                    # Set CUDA_VISIBLE_DEVICES for isolation (optional but good practice)
-                    # env["CUDA_VISIBLE_DEVICES"] = str(gpu_id) # Uncomment if eval.py doesn't handle rank/device selection well
-
-                    cmd = [
-                        "python", "eval.py",
-                        "--model_name_or_path", model_dir,
-                        "--data_name", task,
-                        "--batch_size", str(bs),
-                        "--limit", str(limit),
-                        "--output_dir", output_dir,
-                        "--attention_implementation", attention_implementations,
-                        "--use_batch_exist",
-                        "--use_fused_kernel",
-                        "--surround_with_messages",
-                        # Pass the assigned GPU ID. Ensure eval.py uses this to select the device.
-                        "--rank", str(gpu_id), 
-                        "--threshold", threshold,
-                        "--run_id", str(current_run_id), # Pass the unique run ID
+            for params in param_combinations:
+                
+                if sparsity_method == "token_budget":
+                    sliding_window_size, token_budget = params
+                    param_desc = f"window={sliding_window_size}, budget={token_budget}"
+                    cli_params = [
+                        "--token_budget", str(token_budget),
+                        "--sliding_window_size", str(sliding_window_size),
                     ]
-                    if args.profile_sparsity:
-                        cmd.append("--profile_sparsity")
+                else:
+                    threshold = params[0]
+                    param_desc = f"threshold={threshold}"
+                    cli_params = [
+                        "--threshold", str(threshold),
+                    ]
+
+                print(f"\n{'─'*30}")
+                print(f"Processing Task:{task} | Block_size:{block_size} | {sparsity_method}: {param_desc}")
+
+                active_procs = {}
+                available_gpus = deque(range(num_gpus))
+                completed_runs = 0
+                run_counter = 0
+
+                
+                while run_counter < total_run or active_procs:
                     
-                    # Launch the process
-                    proc = subprocess.Popen(cmd, env=env)
-                    # Store the process and its assigned GPU and run ID
-                    active_procs[proc] = {"gpu_id": gpu_id, "run_id": current_run_id} 
+                    for proc, info in list(active_procs.items()):
+                        if proc.poll() is not None:
+                            print(f"Run {info['run_id']} on GPU {info['gpu_id']} finished.")
+                            available_gpus.append(info['gpu_id'])
+                            del active_procs[proc]
+                            completed_runs += 1
 
-                # --- MODIFICATION END ---
+                    
+                    while run_counter < total_run and available_gpus:
+                        gpu_id = available_gpus.popleft()
+                        current_run_id = run_counter
+                        run_counter += 1
 
-                # If no GPUs are available or all runs launched, wait briefly before checking again
-                if (run_counter < total_run and not available_gpus) or (run_counter >= total_run and active_procs):
-                     time.sleep(5) # Shorter sleep time now as we check more actively
+                        print(f"Launching run {current_run_id} on GPU {gpu_id}...")
+                        
+                        env = os.environ.copy()
+                        env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+                        cmd = [
+                            "python", "eval.py",
+                            "--model_name_or_path", model_dir,
+                            "--data_name", task,
+                            "--batch_size", str(bs),
+                            "--limit", str(limit),
+                            "--output_dir", output_dir,
+                            "--attention_implementation", attention_implementations,
+                            "--use_batch_exist",
+                            "--use_fused_kernel",
+                            "--surround_with_messages",
+                            "--rank", str(gpu_id),
+                            "--sparsity_method", sparsity_method,
+                            "--block_size", str(block_size),
+                            "--run_id", str(current_run_id),
+                        ] + cli_params
+
+                        if args.profile_sparsity:
+                            cmd.append("--profile_sparsity")
+
+                        proc = subprocess.Popen(cmd, env=env)
+                        active_procs[proc] = {"gpu_id": gpu_id, "run_id": current_run_id}
+
+                    # 等待进程资源
+                    if (run_counter < total_run and not available_gpus) or (run_counter >= total_run and active_procs):
+                        time.sleep(5)
 
 
-            # --- Original wait loop removed as the logic is integrated above ---
+                get_results_cmd = [
+                    "python", "get_results.py",
+                    "--model_name_or_path", model_dir,
+                    "--data_name", task,
+                    "--batch_size", str(bs),
+                    "--limit", str(limit),
+                    "--output_dir", output_dir,
+                    "--attention_implementation", attention_implementations,
+                    "--use_batch_exist",
+                    "--total_run", str(total_run),
+                    "--sparsity_method", sparsity_method,
+                    "--block_size", str(block_size),
+                ] + cli_params
 
-            print(f"All {total_run} runs for threshold {threshold} completed.")
+                if args.profile_sparsity:
+                    get_results_cmd.append("--profile_sparsity")
 
-            # --- Run get_results.py (unchanged) ---
-            get_results_cmd = [
-                "python", "get_results.py",
-                "--model_name_or_path", model_dir,
-                "--data_name", task,
-                "--batch_size", str(bs),
-                "--limit", str(limit),
-                "--output_dir", output_dir,
-                "--attention_implementation", attention_implementations,
-                "--use_batch_exist",
-                "--total_run", str(total_run),
-                "--threshold", threshold
-            ]
-            if args.profile_sparsity:
-                get_results_cmd.append("--profile_sparsity")
+                try:
+                    subprocess.run(get_results_cmd, check=True)
+                    print(f"Successfully generated results for {param_desc}")
+                except subprocess.CalledProcessError as e:
+                    print(f"Error generating results: {e}")
+            print(f"\nCompleted: {block_size}")
+        print(f"\nCompleted: {task}")
 
-            try:
-                subprocess.run(get_results_cmd, check=True)
-                print(f"--- Successfully generated results for threshold: {threshold} ---")
-            except subprocess.CalledProcessError as e:
-                print(f"--- Error running get_results.py for threshold {threshold}: {e} ---")
-                # Decide if you want to exit or continue with the next threshold/task
-                # sys.exit(1) 
-
-        print(f"Completed: {task}-{attention_implementations}")
-
-    print("All tasks and configurations completed!")
+    print("\n All tasks and configurations completed!")

@@ -10,4 +10,5 @@ python parallel_run.py \
       --tasks "$tasks" \
       --output_dir "$output_dir" \
       --attention "$attention_implementation" \
+      --sparsity_method "threshold" \
       --threshold "0" \
