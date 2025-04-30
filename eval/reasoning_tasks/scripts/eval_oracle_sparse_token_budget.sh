@@ -17,7 +17,7 @@ python parallel_run_token_budget.py \
       --model_size "$model_size" \
       --tasks "$tasks" \
       --output_dir "$output_dir" \
-      --attention "$attention_implementation" \
+      --attention_implementation "$attention_implementation" \
       --block_size "$block_size" \
       --sparsity_method "$sparsity_method" \
       --token_budget "$token_budget" \

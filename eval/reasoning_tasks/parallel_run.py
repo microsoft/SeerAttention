@@ -46,7 +46,7 @@ if __name__ == "__main__":
                         help="Comma-separated list of tasks (e.g., aime,math,gpqa)")
     parser.add_argument("--output_dir", type=str, default="./results/aime",
                         help="Directory to store output results")
-    parser.add_argument("--attention", type=str, default="seer_sparse",
+    parser.add_argument("--attention_implementation", type=str, default="seer_sparse",
                         help="attention implementations")
     parser.add_argument("--block_size", default="64", type=str)
     parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold"], type=str)
@@ -67,7 +67,7 @@ if __name__ == "__main__":
 
     model_subfolder = os.path.basename(model_dir.rstrip('/'))
     output_dir = os.path.join(args.output_dir, model_subfolder)
-    attention_implementations = args.attention
+    attention_implementation = args.attention_implementation
 
     task_config = Choose_task_config(args.model_size)
 
@@ -149,7 +149,7 @@ if __name__ == "__main__":
                             "--batch_size", str(bs),
                             "--limit", str(limit),
                             "--output_dir", output_dir,
-                            "--attention_implementation", attention_implementations,
+                            "--attention_implementation", attention_implementation,
                             "--use_batch_exist",
                             "--use_fused_kernel",
                             "--surround_with_messages",
@@ -177,7 +177,7 @@ if __name__ == "__main__":
                     "--batch_size", str(bs),
                     "--limit", str(limit),
                     "--output_dir", output_dir,
-                    "--attention_implementation", attention_implementations,
+                    "--attention_implementation", attention_implementation,
                     "--use_batch_exist",
                     "--total_run", str(total_run),
                     "--sparsity_method", sparsity_method,

@@ -9,6 +9,6 @@ python parallel_run.py \
       --model_dir "$model_dir" \
       --tasks "$tasks" \
       --output_dir "$output_dir" \
-      --attention "$attention_implementation" \
+      --attention_implementation "$attention_implementation" \
       --sparsity_method "threshold" \
       --threshold "0" \
