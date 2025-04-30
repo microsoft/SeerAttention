@@ -6,8 +6,6 @@ import argparse
 import time
 from collections import deque # Use deque for efficient pop/append
 
-limit = -1
-num_gpus = 8
 
 def Choose_task_config(model_size):
     if model_size == "7B" or model_size == "8B":
@@ -48,6 +46,9 @@ if __name__ == "__main__":
                         help="Directory to store output results")
     parser.add_argument("--attention_implementation", type=str, default="seer_sparse",
                         help="attention implementations")
+    parser.add_argument("--limit", type=int, default=-1,
+                        help="Limit for the number of samples to process")
+    parser.add_argument("--num_gpus", default="8", type=int)
     parser.add_argument("--block_size", default="64", type=str)
     parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold"], type=str)
     parser.add_argument("--sliding_window_size", default="0", type=str)
@@ -56,6 +57,9 @@ if __name__ == "__main__":
     parser.add_argument("--profile_sparsity", action="store_true",
                         help="Flag to profile sparsity in eval.py")
     args = parser.parse_args()
+
+    limit = args.limit
+    num_gpus = args.num_gpus
 
     model_dir = args.model_dir
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]

@@ -2,6 +2,8 @@ model_dir="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
 output_dir="./result_oracle_sparse"
 model_size="14B"
 attention_implementation="oracle_sparse"
+num_gpus=8
+limit=-1
 
 # tasks="aime,math,gpqa,olympiadbench"
 tasks="aime"
@@ -22,3 +24,5 @@ python parallel_run.py \
       --token_budget "$token_budget" \
       --sliding_window_size "$sliding_window_size" \
       --profile_sparsity \
+      --num_gpus "$num_gpus" \
+      --limit "$limit" \

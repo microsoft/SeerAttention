@@ -4,7 +4,7 @@ models_dir=${MODELS_DIR:-"./models"}
 # Define the subfolder that will store all eval results.
 results_dir="${models_dir}/results"
 echo "results_dir: ${results_dir}"
-threshold=${THRESHOLD:-"1e-3"}
+threshold=${THRESHOLD:-"5e-3"}
 
 # Example tasks to evaluate on (modify as necessary)
 # TASKS="aime,math,gpqa,olympiadbench"
@@ -13,6 +13,8 @@ tasks=${TASKS:-"aime"}
 attention_implementation="seer_sparse"
 sparsity_method="threshold"
 model_size="14B"
+num_gpus=8
+limit=-1
 
 # Create the results folder if it doesn't exist
 mkdir -p "$results_dir"
@@ -47,6 +49,8 @@ for model in "$models_dir"/*/ ; do
             --sparsity_method "$sparsity_method" \
             --profile_sparsity \
             --threshold "$threshold" \
+            --num_gpus "$num_gpus" \
+            --limit "$limit" \
         
         echo "Completed evaluation for model: ${model_basename}"
     fi
