@@ -233,8 +233,6 @@ class Qwen2SeerAttention(nn.Module):
             activate_block_count = block_sparse_mask.sum()   # block_sparse_mask in shape batch, kv_heads, seq(block)
             original_block_count = block_attention_mask.sum() * self.config.num_key_value_heads # block_attention_mask in shape batch, 1, seq(block)
             activate_and_original_block_count = (activate_block_count.item(), original_block_count.item())
-            # if self.layer_idx == 0:
-            #     print(f"activate_and_original_block_count: {activate_and_original_block_count}")
 
         if self.config.seerattn_implementation == "seer_dense":
             attn_output = dense_flash_attention_forward(
