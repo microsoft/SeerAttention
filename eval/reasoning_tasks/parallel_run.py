@@ -165,7 +165,6 @@ if __name__ == "__main__":
                         proc = subprocess.Popen(cmd, env=env)
                         active_procs[proc] = {"gpu_id": gpu_id, "run_id": current_run_id}
 
-                    # 等待进程资源
                     if (run_counter < total_run and not available_gpus) or (run_counter >= total_run and active_procs):
                         time.sleep(5)
 
