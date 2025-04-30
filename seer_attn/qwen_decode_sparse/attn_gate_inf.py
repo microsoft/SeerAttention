@@ -53,57 +53,32 @@ def get_sparse_attn_mask_from_threshold(x, threshold):
     dense_mask = x > threshold 
     return  dense_mask
 
-# def get_sparse_attn_mask_from_budget(x, block_budget, block_attention_mask):
-
-#     if x.shape[-1] <= block_budget:
-#         full_mask = torch.ones_like(x, dtype=torch.bool, device=x.device)
-#         full_mask = full_mask & block_attention_mask
-#         return full_mask
-#     mask = torch.zeros_like(x, dtype=torch.bool, device=x.device)
-#     _, topk_indices = torch.topk(x, k=block_budget, dim=-1, sorted=False)
-#     mask.scatter_(-1, topk_indices, True)
-
-#     mask = mask & block_attention_mask
-
-    
-#     return mask
 
 def get_sparse_attn_mask_from_budget(x, block_budget, sliding_window_size, block_attention_mask):
-    seq_len = x.size(-1)
+    block_seq_len = x.size(-1)
     
-    # 如果序列长度不超过预算，直接全选并应用块掩码
-    if seq_len <= block_budget:
+    if block_seq_len <= block_budget:
         full_mask = torch.ones_like(x, dtype=torch.bool, device=x.device)
         full_mask = full_mask & block_attention_mask
         return full_mask
-    
-    # print("seq_len:", seq_len)
-    # print("block_budget:", block_budget)
-    # print("sliding_window_size:", sliding_window_size)
 
     k = block_budget - sliding_window_size
     
-    # 创建滑动窗口的掩码（末尾sliding_window_size个位置）
     mask_sliding = torch.zeros_like(x, dtype=torch.bool, device=x.device)
     if sliding_window_size > 0:
         mask_sliding[..., -sliding_window_size:] = True
     
-    # 处理不需要额外选择的情况
     if k <= 0:
         final_mask = mask_sliding
     else:
-        # 掩蔽已选位置后选择剩余topk
         modified_x = x.masked_fill(mask_sliding, float('-inf'))
         _, topk_indices = torch.topk(modified_x, k=k, dim=-1, sorted=False)
         
-        # 生成额外选择的掩码
         mask_extra = torch.zeros_like(x, dtype=torch.bool, device=x.device)
         mask_extra.scatter_(-1, topk_indices, True)
         
-        # 合并滑动窗口和额外选择的掩码
         final_mask = mask_sliding | mask_extra
-    
-    # 应用块注意力掩码
+
     final_mask = final_mask & block_attention_mask
     
     return final_mask
@@ -222,18 +197,10 @@ class AttnGate(nn.Module):
 
         is_decode = k.shape[1] == 1 
         batch_size, _, num_kv_heads, _ = k.shape 
-        kv_len = attention_mask.shape[-1]
-        # print("sparsity_method:", sparsity_method)      
+        kv_len = attention_mask.shape[-1]     
 
         if is_decode:
             assert q.dim() == 4
-            # if sparsity_method == "token_budget":
-            #     if kv_len <= self.block_size * block_budget:
-            #         print("kv_len:",kv_len)
-            #         print("token_budget:", self.block_size * block_budget)
-            #         full_mask = torch.ones((batch_size, num_kv_heads, math.ceil(kv_len / self.block_size)), dtype=torch.bool, device=q.device)
-            #         full_mask = full_mask & attention_mask
-            #     return full_mask
 
             if self.q_head_pooling_type == "Qavgproj" or self.q_head_pooling_type == "Qavg":
                 q = F.avg_pool2d(q, kernel_size=[self.gqa_group_size, 1], stride=[self.gqa_group_size, 1])
@@ -274,7 +241,6 @@ class AttnGate(nn.Module):
             
 
             if sparsity_method == "token_budget":
-                # print("block_budget:", block_budget)
                 mask = get_sparse_attn_mask_from_budget(attn, block_budget, block_sliding_window_size, attention_mask)
             elif sparsity_method == "threshold":
                 mask = get_sparse_attn_mask_from_threshold(attn, threshold)
