@@ -1,6 +1,6 @@
 #!/bin/bash
 # Set the folder that contains your model directories.
-models_dir=${MODELS_DIR:-"/home/v-shumingguo/gsm_blob/distilled_model_gates/DeepSeek-R1-Distill-Qwen-14B-varlen"}
+models_dir=${MODELS_DIR:-"./models"}
 # Define the subfolder that will store all eval results.
 results_dir="${models_dir}/results"
 echo "results_dir: ${results_dir}"
