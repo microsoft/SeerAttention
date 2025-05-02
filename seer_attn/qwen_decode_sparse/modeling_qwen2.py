@@ -110,9 +110,6 @@ def compute_oracle_sparse_mask(q, k, attention_mask, block_attention_mask, block
         attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
 
         attn_weights = F.max_pool2d(attn_weights, kernel_size=(num_gqa_groups, block_size), stride=(num_gqa_groups, block_size), ceil_mode=True)
-
-        sum = torch.sum(attn_weights, dim=-1, keepdim=True)
-        attn_weights.div_(sum)
         
         if sparsity_method == "token_budget":
             block_sparse_mask = get_sparse_attn_mask_from_budget(attn_weights, block_budget, block_sliding_window_size, block_attention_mask)
