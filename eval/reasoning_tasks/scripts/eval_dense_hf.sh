@@ -7,7 +7,7 @@ limit=-1
 
 tasks="aime,math,gpqa,olympiadbench"
 
-python parallel_run.py \
+python parallel_run_hf.py \
       --model_dir "$model_dir" \
       --tasks "$tasks" \
       --output_dir "$output_dir" \

@@ -97,13 +97,12 @@ if __name__ == "__main__":
                 ]
             elif sparsity_method == "threshold":
                 param_combinations = [
-                    (th,) 
+                    (sw, th) 
+                    for sw in sliding_window_sizes 
                     for th in thresholds
                 ]
 
-            
             for params in param_combinations:
-                
                 if sparsity_method == "token_budget":
                     sliding_window_size, token_budget = params
                     param_desc = f"window={sliding_window_size}, budget={token_budget}"
@@ -111,11 +110,12 @@ if __name__ == "__main__":
                         "--token_budget", str(token_budget),
                         "--sliding_window_size", str(sliding_window_size),
                     ]
-                else:
-                    threshold = params[0]
-                    param_desc = f"threshold={threshold}"
+                elif sparsity_method == "threshold":
+                    sliding_window_size, threshold = params
+                    param_desc = f"window={sliding_window_size}, threshold={threshold}"
                     cli_params = [
                         "--threshold", str(threshold),
+                        "--sliding_window_size", str(sliding_window_size),
                     ]
 
                 print(f"\n{'─'*30}")
@@ -126,9 +126,20 @@ if __name__ == "__main__":
                 completed_runs = 0
                 run_counter = 0
 
-                
+                if sparsity_method == "token_budget":
+                    output_config_subdir = os.path.join(output_dir, f"{task}_bs{bs}_{sparsity_method}_B{token_budget}_win{sliding_window_size}_blocksize{block_size}_{attention_implementation}")
+                elif sparsity_method == "threshold":
+                    output_config_subdir = os.path.join(output_dir, f"{task}_bs{bs}_{sparsity_method}_T{threshold}_win{sliding_window_size}_blocksize{block_size}_{attention_implementation}")
+
+                os.makedirs(output_config_subdir, exist_ok=True)
+
+                # if overall_summary.txt exist in args.output_dir, continue
+                overall_summary_filepath = os.path.join(output_config_subdir, "overall_summary.txt")
+                if os.path.exists(overall_summary_filepath):
+                    print(f"Skip {param_desc} because overall_summary.txt already exists.")
+                    continue
+
                 while run_counter < total_run or active_procs:
-                    
                     for proc, info in list(active_procs.items()):
                         if proc.poll() is not None:
                             print(f"Run {info['run_id']} on GPU {info['gpu_id']} finished.")
@@ -136,7 +147,6 @@ if __name__ == "__main__":
                             del active_procs[proc]
                             completed_runs += 1
 
-                    
                     while run_counter < total_run and available_gpus:
                         gpu_id = available_gpus.popleft()
                         current_run_id = run_counter
@@ -147,12 +157,12 @@ if __name__ == "__main__":
                         env = os.environ.copy()
                         env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
                         cmd = [
-                            "python", "eval.py",
+                            "python", "eval_hf.py",
                             "--model_name_or_path", model_dir,
                             "--data_name", task,
                             "--batch_size", str(bs),
                             "--limit", str(limit),
-                            "--output_dir", output_dir,
+                            "--output_dir", output_config_subdir,
                             "--attention_implementation", attention_implementation,
                             "--use_batch_exist",
                             "--use_fused_kernel",
@@ -172,20 +182,15 @@ if __name__ == "__main__":
                     if (run_counter < total_run and not available_gpus) or (run_counter >= total_run and active_procs):
                         time.sleep(5)
 
-
                 get_results_cmd = [
-                    "python", "get_results.py",
+                    "python", "summary_results.py",
                     "--model_name_or_path", model_dir,
                     "--data_name", task,
                     "--batch_size", str(bs),
                     "--limit", str(limit),
-                    "--output_dir", output_dir,
-                    "--attention_implementation", attention_implementation,
-                    "--use_batch_exist",
+                    "--output_dir", output_config_subdir,
                     "--total_run", str(total_run),
-                    "--sparsity_method", sparsity_method,
-                    "--block_size", str(block_size),
-                ] + cli_params
+                ]
 
                 if args.profile_sparsity:
                     get_results_cmd.append("--profile_sparsity")

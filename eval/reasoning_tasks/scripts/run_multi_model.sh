@@ -40,7 +40,7 @@ for model in "$models_dir"/*/ ; do
         echo "Results will be saved to: ${output_dir}"
         
         # Run the evaluation script for the model.
-        python parallel_run.py \
+        python parallel_run_hf.py \
             --model_dir "$model_dir" \
             --model_size "$model_size" \
             --tasks "$tasks" \

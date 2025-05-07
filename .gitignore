@@ -410,5 +410,6 @@ sing*
 test_script.sh
 cache_dir
 *.egg-info
+test_eval*
 # eval_dense*
 # eval_oracle*

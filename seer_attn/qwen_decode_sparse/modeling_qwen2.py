@@ -114,7 +114,7 @@ def compute_oracle_sparse_mask(q, k, attention_mask, block_attention_mask, block
         if sparsity_method == "token_budget":
             block_sparse_mask = get_sparse_attn_mask_from_budget(attn_weights, block_budget, block_sliding_window_size, block_attention_mask)
         elif sparsity_method == "threshold":
-            block_sparse_mask = get_sparse_attn_mask_from_threshold(attn_weights, threshold) 
+            block_sparse_mask = get_sparse_attn_mask_from_threshold(attn_weights, threshold, block_sliding_window_size, block_attention_mask) 
 
         block_sparse_mask[:, :, -1] = True
     

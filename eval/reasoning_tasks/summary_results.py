@@ -40,21 +40,10 @@ def parse_args():
     parser.add_argument("--data_dir", default="./data", type=str)
     parser.add_argument('--data_name', type=str, default="math", help='identify how to extract answer')
     parser.add_argument("--split", default="test", type=str)
-    parser.add_argument('--start_idx', type=int, default=0, help="data[start:end]")
-    parser.add_argument('--end_idx', type=int, default=-1, help="data[start:end], if -1, data[start:]")
     parser.add_argument("--output_dir", default="./outputs", type=str)
-    parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold"], type=str)
-    parser.add_argument("--threshold", default=0, type=float)
-    parser.add_argument("--token_budget", default=2048, type=int)
-    parser.add_argument("--sliding_window_size", default=0, type=int)
-    parser.add_argument("--block_size", default=64, type=int)
-    parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
-    parser.add_argument("--use_vllm", action="store_true")
-    parser.add_argument("--use_batch_exist", action="store_true")
-    parser.add_argument("--use_fused_kernel", action="store_true")
-    parser.add_argument("--profile_sparsity", action="store_true")
     parser.add_argument("--rank", default=0, type=int)
     parser.add_argument("--total_run", default=1, type=int)
+    parser.add_argument("--profile_sparsity", action="store_true", help="Flag to profile sparsity")
     args = parser.parse_args()
     
     return args
@@ -64,22 +53,10 @@ def infer(args):
     print(args)
     generate_lens = []
     examples = load_data(args.data_name, args.split, args.data_dir)
-    if args.end_idx == -1:
-        args.end_idx = len(examples)
-    examples = examples[args.start_idx:args.end_idx]
 
     limit = args.limit
     if limit > 0:
         examples = examples[:limit]
-    
-    if args.use_vllm:
-        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_vllm_dense")
-    elif args.sparsity_method == "token_budget":
-        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_B{args.token_budget}_win{args.sliding_window_size}_blocksize{args.block_size}_{args.attention_implementation}")
-    elif args.sparsity_method == "threshold":
-        output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_bs{args.batch_size}_{args.sparsity_method}_T{args.threshold}_blocksize{args.block_size}_{args.attention_implementation}")
-    else:
-        raise ValueError(f"Unknown sparsity method: {args.sparsity_method}")
 
     Acc_list = []
     generate_lens_list = []
@@ -88,7 +65,7 @@ def infer(args):
 
     num_runs = args.total_run
     for i in range(num_runs):
-        output_runnum_subdir = os.path.join(output_config_subdir, f"run_{i}")
+        output_runnum_subdir = os.path.join(args.output_dir, f"run_{i}")
 
         completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
         
@@ -171,7 +148,7 @@ def infer(args):
         if args.profile_sparsity:
             print("Overall_sparsity: ", overall_sparsity)
 
-    overall_summary_filepath = os.path.join(output_config_subdir, "overall_summary.txt")
+    overall_summary_filepath = os.path.join(args.output_dir, "overall_summary.txt")
     with open(overall_summary_filepath, "a") as f:
         f.write(f"Model Path: {args.model_name_or_path}\n")
         f.write(f"Total_run: {num_runs}\n")

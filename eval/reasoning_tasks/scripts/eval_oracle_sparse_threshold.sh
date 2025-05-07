@@ -12,7 +12,7 @@ block_size="16,32,64,128"
 sparsity_method="threshold"
 threshold="5e-4,1e-3,5e-3,1e-2"
 
-python parallel_run.py \
+python parallel_run_hf.py \
       --model_dir "$model_dir" \
       --model_size "$model_size" \
       --tasks "$tasks" \

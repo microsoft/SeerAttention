@@ -145,14 +145,10 @@ def infer(args):
               gpu_memory_utilization=0.96,
               )
 
-
-    output_config_subdir = os.path.join(args.output_dir, f"{args.data_name}_vllm_dense")
-    os.makedirs(output_config_subdir, exist_ok=True)
-
     # run_num = args.rank * args.repeat + repeat_i
     generate_lens = []
     
-    output_runnum_subdir = os.path.join(output_config_subdir, f"run_{args.run_id}")
+    output_runnum_subdir = os.path.join(args.output_dir, f"run_{args.run_id}")
     os.makedirs(output_runnum_subdir, exist_ok=True)
 
     completion_filepath = os.path.join(output_runnum_subdir, "completions.json")

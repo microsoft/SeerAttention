@@ -13,7 +13,7 @@ sparsity_method="token_budget"
 token_budget="1024,2048,4096,8192"
 sliding_window_size="0,512,1024"
 
-python parallel_run.py \
+python parallel_run_hf.py \
       --model_dir "$model_dir" \
       --model_size "$model_size" \
       --tasks "$tasks" \

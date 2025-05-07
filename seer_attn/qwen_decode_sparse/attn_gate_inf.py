@@ -49,9 +49,22 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
-def get_sparse_attn_mask_from_threshold(x, threshold):
-    dense_mask = x > threshold 
-    return  dense_mask
+def get_sparse_attn_mask_from_threshold(x, threshold, sliding_window_size, block_attention_mask):
+    block_seq_len = x.size(-1)
+    
+    if block_seq_len <= sliding_window_size:
+        full_mask = torch.ones_like(x, dtype=torch.bool, device=x.device)
+        full_mask = full_mask & block_attention_mask
+        return full_mask
+
+    final_mask = x > threshold
+
+    if sliding_window_size > 0:
+        final_mask[..., -sliding_window_size:] = True
+
+    final_mask = final_mask & block_attention_mask
+
+    return final_mask
 
 
 def get_sparse_attn_mask_from_budget(x, block_budget, sliding_window_size, block_attention_mask):
