@@ -100,7 +100,6 @@ def _split_kernel(
 def oracle_sparse(
     q,
     k_cache,
-    v_cache,
     cache_seqlens,
     block_size=32,
     sm_scale=None,
@@ -115,7 +114,7 @@ def oracle_sparse(
     if sm_scale is None:
         sm_scale = 1 / math.sqrt(dim)
 
-    _, max_cache_seqlen, heads_kv, dim_v = v_cache.shape
+    _, max_cache_seqlen, heads_kv, dim_v = k_cache.shape
     # assert max_cache_seqlen == max_cache_seqlen_cache, "max_cache_seqlen mismatch"
     group_size = heads // heads_kv
 
@@ -223,7 +222,6 @@ if __name__ == "__main__":
     triton_out = oracle_sparse(
         Q,
         K,
-        V,
         cache_seqlens,
         block_size,
     )
@@ -243,7 +241,6 @@ if __name__ == "__main__":
         oracle_sparse(
             Q,
             K,
-            V,
             cache_seqlens,
             block_size,
         )
@@ -253,7 +250,6 @@ if __name__ == "__main__":
         oracle_sparse(
             Q,
             K,
-            V,
             cache_seqlens,
             block_size,
         )
