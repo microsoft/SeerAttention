@@ -17,7 +17,7 @@ def Choose_task_config(model_size):
         }
     elif model_size == "14B":
         task_config = {
-            "aime": {"bs": 30, "total_run": 1},
+            "aime": {"bs": 30, "total_run": 64},
             "math": {"bs": 250, "total_run": 8},
             "gpqa": {"bs": 100, "total_run": 16},
             "olympiadbench": {"bs": 60, "total_run": 8}
