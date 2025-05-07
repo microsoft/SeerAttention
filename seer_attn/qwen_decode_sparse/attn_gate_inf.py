@@ -256,7 +256,7 @@ class AttnGate(nn.Module):
             if sparsity_method == "token_budget":
                 mask = get_sparse_attn_mask_from_budget(attn, block_budget, block_sliding_window_size, attention_mask)
             elif sparsity_method == "threshold":
-                mask = get_sparse_attn_mask_from_threshold(attn, threshold)
+                mask = get_sparse_attn_mask_from_threshold(attn, threshold, block_sliding_window_size, attention_mask)
             mask[:, : ,-1] = True
 
             return mask
