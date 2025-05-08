@@ -86,10 +86,6 @@ def compute_oracle_sparse_mask(q, k, cache_seqlens, block_attention_mask, block_
     if q_len > 1: # use dense prefill for sparse decode
         block_sparse_mask = None
     else:
-        # if sparsity_method == "token_budget":
-        #     full_mask = torch.ones((batch_size, num_kv_heads, math.ceil(kv_len/block_size)), dtype=torch.bool, device=q.device)
-        #     full_mask = full_mask & block_attention_mask
-        #     return full_mask
 
         attn_weights = oracle_sparse(q, k, cache_seqlens, block_size)
         
