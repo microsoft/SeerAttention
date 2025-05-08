@@ -52,10 +52,11 @@ def plot_sparsity_from_json(json_filepath):
     with open(json_filepath, 'r') as f:
         data = json.load(f)
     
-    all_batch_sparsitys_info = data
+    all_batch_sparsitys_info = data.get("sparsity_info")
     if all_batch_sparsitys_info is None:
         raise ValueError("JSON file does not contain 'quantile_sparsities' or 'all_batch_sparsitys_info' key.")
     quantile_sparsities = calculate_quantile_sparsity(all_batch_sparsitys_info, group_size=1000)
+    print("len:", len(quantile_sparsities))
     print("Calculated quantile sparsities from all_batch_sparsitys_info:")
 
     print(quantile_sparsities)

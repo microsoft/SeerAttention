@@ -35,6 +35,7 @@ import copy, math, os
 from einops import rearrange
 from seer_attn.qwen_decode_sparse.attention_forward_sparse import sparse_flash_attention_forward
 from seer_attn.qwen_decode_sparse.attention_forward_dense import dense_flash_attention_forward
+from seer_attn.kernels.varlen.oracle_sparse import oracle_sparse
 from seer_attn.modules.layernorm import RMSNorm
 from flash_attn.layers.rotary import apply_rotary_emb_func
 from seer_attn.qwen_decode_sparse.cache_utils import KCompressionCache
@@ -77,7 +78,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
-def compute_oracle_sparse_mask(q, k, attention_mask, block_attention_mask, block_size, sparsity_method, threshold=0.0, block_budget=2048, block_sliding_window_size=0):
+def compute_oracle_sparse_mask(q, k, cache_seqlens, block_attention_mask, block_size, sparsity_method, threshold=0.0, block_budget=2048, block_sliding_window_size=0):
     batch_size, q_len, num_q_heads, head_dim = q.shape
     _, kv_len, num_kv_heads, _ = k.shape
     num_gqa_groups = num_q_heads // num_kv_heads
@@ -85,30 +86,12 @@ def compute_oracle_sparse_mask(q, k, attention_mask, block_attention_mask, block
     if q_len > 1: # use dense prefill for sparse decode
         block_sparse_mask = None
     else:
-        if sparsity_method == "token_budget":
-            full_mask = torch.ones((batch_size, num_kv_heads, math.ceil(kv_len/block_size)), dtype=torch.bool, device=q.device)
-            full_mask = full_mask & block_attention_mask
-            return full_mask
-        q = q.transpose(1, 2) # (b, num_q_heads, q_len, d)
-        k = k.transpose(1, 2) # (b, num_kv_heads, kv_len, d)
+        # if sparsity_method == "token_budget":
+        #     full_mask = torch.ones((batch_size, num_kv_heads, math.ceil(kv_len/block_size)), dtype=torch.bool, device=q.device)
+        #     full_mask = full_mask & block_attention_mask
+        #     return full_mask
 
-        # Repeat K heads for GQA compatibility
-        if num_gqa_groups > 1:
-            k = repeat_kv(k, num_gqa_groups)
-
-        attn_weights = torch.einsum('bhid, bhdj -> bhij', q, k.transpose(-1, -2)) * (head_dim**-0.5) # (b, num_q_heads, q_len, kv_len)
-
-        #q_len=1, (b, num_q_heads, q_len, kv_len) -> (b, num_q_heads, kv_len), as block_sparse_mask must in bhs
-        attn_weights = attn_weights.squeeze(2)
-        
-        #from 2D to 3D, (b,kv_len) -> (b,1,kv_len)
-        attention_mask=attention_mask.unsqueeze(1)
-
-        attn_weights = attn_weights.masked_fill(~attention_mask.bool(), float('-inf'))
-
-        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
-
-        attn_weights = F.max_pool2d(attn_weights, kernel_size=(num_gqa_groups, block_size), stride=(num_gqa_groups, block_size), ceil_mode=True)
+        attn_weights = oracle_sparse(q, k, cache_seqlens, block_size)
         
         if sparsity_method == "token_budget":
             block_sparse_mask = get_sparse_attn_mask_from_budget(attn_weights, block_budget, block_sliding_window_size, block_attention_mask)
@@ -201,7 +184,7 @@ class Qwen2SeerAttention(nn.Module):
                 block_sparse_mask = compute_oracle_sparse_mask(
                     q,
                     k,
-                    attention_mask,
+                    cache_seqlens,
                     block_attention_mask,
                     self.config.seerattn_gate_block_size,
                     self.config.seerattn_sparsity_method,

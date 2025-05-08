@@ -354,9 +354,9 @@ def infer(args):
         
 
     if args.profile_sparsity:
-        sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
+        # sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
         with open(sparsity_info_filepath, 'w') as f:
-            json.dump(sparsity_info, f, indent=4)
+            json.dump(all_batch_sparsitys_info, f, indent=4)
 
     if args.profile_sparsity:
         other_info = {

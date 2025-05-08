@@ -1,7 +1,7 @@
 import json
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import torch
-# from vllm import LLM, SamplingParams
+from typing import List, Optional, Tuple
 import re
 import importlib.util
 import os
@@ -16,16 +16,49 @@ import pickle
 from math import comb
 import glob
 
-def calculate_average_percentage(sparsitys):
-    activate_block = 0
-    original_block = 0
+def calculate_quantile_sparsity(
+    all_batch_sparsitys_info: List[List[Optional[Tuple[Tuple[int, int], ...]]]],
+    group_size: int = 1000
+) -> List[float]:
+    """
+    Calculates sparsity for each quantile group of sequence steps.
 
-    for activate_block_count, original_block_count in sparsitys:
-        activate_block += activate_block_count
-        original_block += original_block_count
-            
-    # average_percentage_weighted = weighted_sum / total_weight
-    return activate_block, original_block
+    Each group aggregates results over `group_size` sequence steps from the flattened list.
+    The sparsity is computed as 1 - (total activated blocks / total original blocks) for that group.
+
+    Args:
+        all_batch_sparsitys_info: Nested list structure from each batch.
+        group_size: Number of sequence steps per quantile group.
+
+    Returns:
+        A list of sparsity values for each quantile.
+    """
+    # Flatten the sparsity info by summing over layers per sequence step.
+    flattened = []
+    for each_batch_sequence_info in all_batch_sparsitys_info:
+        for each_step_sparsitys_info in each_batch_sequence_info:
+            act = 0
+            orig = 0
+            for each_layer_sparsitys_info in each_step_sparsitys_info:
+                act += each_layer_sparsitys_info[0]
+                orig += each_layer_sparsitys_info[1]
+            flattened.append((act, orig))
+    
+    quantile_results = []
+    num_groups = (len(flattened) + group_size - 1) // group_size  # ceiling division
+    for i in range(num_groups):
+        start = i * group_size
+        end = min((i + 1) * group_size, len(flattened))
+        group = flattened[start:end]
+        total_act = sum(item[0] for item in group)
+        total_orig = sum(item[1] for item in group)
+        if total_orig == 0:
+            sparsity = 0.0
+        else:
+            sparsity = 1 - total_act / total_orig
+        sparsity = round(sparsity, 2)
+        quantile_results.append(sparsity)
+    return quantile_results
 
 
 def parse_list(arg):
@@ -62,6 +95,10 @@ def infer(args):
     generate_lens_list = []
     total_time_list = []
     overall_sparsity_list = []
+    sparsity_16k_list = []
+    sparsity_32k_list = []
+
+    # Load the model and tokenizer
 
     num_runs = args.total_run
     for i in range(num_runs):
@@ -81,7 +118,25 @@ def infer(args):
         total_time = other_info['total_time']
         if args.profile_sparsity:
             overall_sparsity = other_info['overall_sparsity']
-        
+
+        sparsity_info_filepath = os.path.join(output_runnum_subdir, "sparsity_info.json")
+
+        with open(sparsity_info_filepath, 'r') as f:
+            all_batch_sparsitys_info = json.load(f)
+
+        quantile_sparsities = calculate_quantile_sparsity(all_batch_sparsitys_info, group_size=1000)
+        # len_quantile_sparsities = len(quantile_sparsities)
+        # half_index = (len_quantile_sparsities // 2) - 1
+
+        if len(quantile_sparsities) >= 16:
+            sparsity_16k = quantile_sparsities[15]
+            sparsity_16k_list.append(sparsity_16k)
+
+        if len(quantile_sparsities) >= 32:
+            sparsity_32k = quantile_sparsities[31]
+            sparsity_32k_list.append(sparsity_32k)
+
+
         print(f"Successfully loaded run{i}!")
 
         # check all the correct
@@ -114,7 +169,7 @@ def infer(args):
 
         summary_filepath = os.path.join(output_runnum_subdir, "summary.txt")
 
-        with open(summary_filepath, "a") as f:
+        with open(summary_filepath, "w") as f:
             f.write(f"Model Path: {args.model_name_or_path}\n")
             f.write(f"Acc: {Acc:.4f}\n")
             f.write(f"Average generate length: {average_generate_len}\n")
@@ -123,6 +178,11 @@ def infer(args):
             f.write(f"Average time per token: {average_time_per_token}\n")
             if args.profile_sparsity:
                 f.write(f"Overall sparsity: {overall_sparsity}\n")
+                if len(quantile_sparsities) >= 16:
+                    f.write(f"Sparsity at 16k: {sparsity_16k}\n")
+                if len(quantile_sparsities) >= 32:
+                    f.write(f"Sparsity at 32k: {sparsity_32k}\n")
+                f.write(f"Quantile sparsities: {quantile_sparsities}\n")
             f.write("\n")
 
 
@@ -148,8 +208,16 @@ def infer(args):
         if args.profile_sparsity:
             print("Overall_sparsity: ", overall_sparsity)
 
+        if len(sparsity_16k_list) > 0:
+            average_sparsity_16k = sum(sparsity_16k_list) / len(sparsity_16k_list)
+        if len(sparsity_32k_list) > 0:
+            average_sparsity_32k = sum(sparsity_32k_list) / len(sparsity_32k_list)
+
+        print(f"Average sparsity at 16k: {average_sparsity_16k}")
+        print(f"Average sparsity at 32k: {average_sparsity_32k}")
+
     overall_summary_filepath = os.path.join(args.output_dir, "overall_summary.txt")
-    with open(overall_summary_filepath, "a") as f:
+    with open(overall_summary_filepath, "w") as f:
         f.write(f"Model Path: {args.model_name_or_path}\n")
         f.write(f"Total_run: {num_runs}\n")
         f.write(f"Acc: {Acc:.4f}\n")
@@ -159,6 +227,10 @@ def infer(args):
         f.write(f"Average time per token: {average_time_per_token}\n")
         if args.profile_sparsity:
             f.write(f"Overall sparsity: {overall_sparsity}\n")
+            if len(sparsity_16k_list) > 0:
+                f.write(f"Average sparsity at 16k: {average_sparsity_16k}\n")
+            if len(sparsity_32k_list) > 0:
+                f.write(f"Average sparsity at 32k: {average_sparsity_32k}\n")
         f.write("\n")
 
 

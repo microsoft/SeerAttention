@@ -411,5 +411,6 @@ test_script.sh
 cache_dir
 *.egg-info
 test_eval*
+plot*
 # eval_dense*
 # eval_oracle*
