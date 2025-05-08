@@ -811,8 +811,11 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         if load_gate:
             config = SeerAttnLlamaConfig.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
             base_model = config.base_model
-            
-            model = super().from_pretrained(base_model, *model_args, **kwargs)
+            for key in list(kwargs.keys()):
+                if hasattr(config, key) and key != "torch_dtype":
+                    setattr(config, key, kwargs.pop(key))
+            model = super().from_pretrained(base_model, config=config, *model_args, **kwargs)
+
             if os.path.exists(pretrained_model_name_or_path):
                 gate_weights = torch.load(os.path.join(pretrained_model_name_or_path, "attn_gate_weights.pth"))
             else:

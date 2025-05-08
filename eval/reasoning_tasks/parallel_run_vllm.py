@@ -6,8 +6,6 @@ import argparse
 import time
 from collections import deque # Use deque for efficient pop/append
 
-limit = -1
-num_gpus = 8
 
 task_config = {
     "aime": {"total_run": 64},
@@ -25,7 +23,12 @@ if __name__ == "__main__":
                         help="Comma-separated list of tasks (e.g., aime,math,gpqa)")
     parser.add_argument("--output_dir", type=str, default="./results/aime",
                         help="Directory to store output results")
+    parser.add_argument("--limit", type=int, default=-1,
+                        help="Limit for the number of samples to process")
+    parser.add_argument("--num_gpus", default="8", type=int)
     args = parser.parse_args()
+    limit = args.limit
+    num_gpus = args.num_gpus
 
     model_dir = args.model_dir
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
@@ -55,6 +58,9 @@ if __name__ == "__main__":
         run_counter = 0
         # Keep track of completed runs to ensure total_run are processed
         completed_runs = 0 
+
+        output_config_subdir = os.path.join(output_dir, f"{task}_vllm_dense")
+        os.makedirs(output_config_subdir, exist_ok=True)
 
         # Continue as long as there are runs to launch OR runs still active
         while run_counter < total_run or active_procs:
@@ -91,7 +97,7 @@ if __name__ == "__main__":
                     "python", "eval_vllm.py",
                     "--model_name_or_path", model_dir,
                     "--data_name", task,
-                    "--output_dir", output_dir,
+                    "--output_dir", output_config_subdir,
                     "--surround_with_messages",
                     "--limit", str(limit),
                     "--rank", str(gpu_id), 
@@ -116,12 +122,11 @@ if __name__ == "__main__":
 
         # --- Run get_results.py (unchanged) ---
         get_results_cmd = [
-            "python", "get_results.py",
+            "python", "summary_results.py",
             "--model_name_or_path", model_dir,
             "--data_name", task,
-            "--output_dir", output_dir,
+            "--output_dir", output_config_subdir,
             "--limit", str(limit),
-            "--use_vllm",
             "--total_run", str(total_run),
         ]
 

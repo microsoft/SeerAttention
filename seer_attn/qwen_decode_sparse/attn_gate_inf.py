@@ -49,10 +49,52 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
-def get_sparse_attn_mask_from_threshold(x, threshold):
-    dense_mask = x > threshold 
-    return  dense_mask
+def get_sparse_attn_mask_from_threshold(x, threshold, sliding_window_size, block_attention_mask):
+    block_seq_len = x.size(-1)
+    
+    if block_seq_len <= sliding_window_size:
+        full_mask = torch.ones_like(x, dtype=torch.bool, device=x.device)
+        full_mask = full_mask & block_attention_mask
+        return full_mask
 
+    final_mask = x > threshold
+
+    if sliding_window_size > 0:
+        final_mask[..., -sliding_window_size:] = True
+
+    final_mask = final_mask & block_attention_mask
+
+    return final_mask
+
+
+def get_sparse_attn_mask_from_budget(x, block_budget, sliding_window_size, block_attention_mask):
+    block_seq_len = x.size(-1)
+    
+    if block_seq_len <= block_budget:
+        full_mask = torch.ones_like(x, dtype=torch.bool, device=x.device)
+        full_mask = full_mask & block_attention_mask
+        return full_mask
+
+    k = block_budget - sliding_window_size
+    
+    mask_sliding = torch.zeros_like(x, dtype=torch.bool, device=x.device)
+    if sliding_window_size > 0:
+        mask_sliding[..., -sliding_window_size:] = True
+    
+    if k <= 0:
+        final_mask = mask_sliding
+    else:
+        modified_x = x.masked_fill(mask_sliding, float('-inf'))
+        _, topk_indices = torch.topk(modified_x, k=k, dim=-1, sorted=False)
+        
+        mask_extra = torch.zeros_like(x, dtype=torch.bool, device=x.device)
+        mask_extra.scatter_(-1, topk_indices, True)
+        
+        final_mask = mask_sliding | mask_extra
+
+    final_mask = final_mask & block_attention_mask
+    
+    return final_mask
 
 class HeadPoolingLinear(nn.Module):
     def __init__(self, num_k_head, gqa_group_size, model_hidden_size, gate_hidden_size):
@@ -111,6 +153,7 @@ class AttnGate(nn.Module):
                  q_head_pooling_type, 
                  k_pooling_funcs,
                  use_flash_rope,
+
                 ):
         super(AttnGate, self).__init__()
         self.block_size = block_size
@@ -146,7 +189,10 @@ class AttnGate(nn.Module):
             max_cache_len=None,
             position_embeddings=None,
             block_position_embeddings=None, 
+            sparsity_method=None,
             threshold=0.0,
+            block_budget=32,
+            block_sliding_window_size=0,
         ):  
         """
         This attngate module is only used in inference. 
@@ -162,7 +208,9 @@ class AttnGate(nn.Module):
             threshold: Threshold for attention mask.
         """
 
-        is_decode = k.shape[1] == 1        
+        is_decode = k.shape[1] == 1 
+        batch_size, _, num_kv_heads, _ = k.shape 
+        kv_len = attention_mask.shape[-1]     
 
         if is_decode:
             assert q.dim() == 4
@@ -203,8 +251,14 @@ class AttnGate(nn.Module):
             else:
                 attn = attn + attention_mask
             attn = F.softmax(attn, dim=-1)
-            mask = get_sparse_attn_mask_from_threshold(attn, threshold)
+            
+
+            if sparsity_method == "token_budget":
+                mask = get_sparse_attn_mask_from_budget(attn, block_budget, block_sliding_window_size, attention_mask)
+            elif sparsity_method == "threshold":
+                mask = get_sparse_attn_mask_from_threshold(attn, threshold, block_sliding_window_size, attention_mask)
             mask[:, : ,-1] = True
+
             return mask
         else:
             k_pooled = [pool_func(k, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]

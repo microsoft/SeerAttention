@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from flash_attn import flash_attn_func, flash_attn_varlen_func, flash_attn_with_kvcache
-from seer_attn.kernels.varlen.flash_decode_varlen_leftpad import flash_decode_leftpad
+from seer_attn.kernels.varlen.flash_decode_varlen_left_pad_max_v2 import flash_decode_leftpad
 from seer_attn.kernels.varlen.block_sparse_attn_varlen_2d_leftpad import blocksparse_flash_attn_varlen_leftpad
 from seer_attn.kernels.block_sparse_attn import block_sparse_triton_fn
 import os
