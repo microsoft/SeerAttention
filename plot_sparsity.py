@@ -58,8 +58,10 @@ def plot_sparsity_from_json(json_filepath):
     quantile_sparsities = calculate_quantile_sparsity(all_batch_sparsitys_info, group_size=1000)
     print("len:", len(quantile_sparsities))
     print("Calculated quantile sparsities from all_batch_sparsitys_info:")
-
+    print(quantile_sparsities[15])
+    print(quantile_sparsities[-2])
     print(quantile_sparsities)
+
     
     # Plot the sparsity distribution.
     plt.figure(figsize=(8, 6))

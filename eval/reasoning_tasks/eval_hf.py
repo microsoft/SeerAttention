@@ -18,7 +18,7 @@ from Utils.math_normalization import *
 from Utils.grader import *
 import pickle
 from math import comb
-from seer_attn import SeerDecodingQwen2ForCausalLM
+from seer_attn import SeerDecodingQwen2ForCausalLM, SeerDecodingPhi3ForCausalLM
 from generation_utils import batch_exist_generate
 from typing import Optional, Tuple
 
@@ -230,7 +230,7 @@ def infer(args):
 
 
     if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse" or args.attention_implementation == "seer_dense":
-        model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
+        model = SeerDecodingPhi3ForCausalLM.from_pretrained(model_name_or_path,
                                                 torch_dtype=torch.bfloat16,
                                                 device_map=device,
                                                 load_gate = args.attention_implementation == "seer_sparse",
