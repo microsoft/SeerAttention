@@ -18,7 +18,7 @@ from Utils.math_normalization import *
 from Utils.grader import *
 import pickle
 from math import comb
-from seer_attn import SeerDecodingQwen2ForCausalLM, SeerDecodingPhi3ForCausalLM
+from seer_attn import SeerDecodingQwen2ForCausalLM, SeerDecodingQwen3ForCausalLM, SeerDecodingPhi3ForCausalLM
 from generation_utils import batch_exist_generate
 from typing import Optional, Tuple
 
@@ -230,38 +230,31 @@ def infer(args):
 
 
     if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse" or args.attention_implementation == "seer_dense":
-        if "Qwen2" in config.architectures[0]:
-            model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
-                                                torch_dtype=torch.bfloat16,
-                                                device_map=device,
-                                                load_gate = args.attention_implementation == "seer_sparse",
-                                                use_cache=True,
-                                                seerattn_sparsity_method=args.sparsity_method,
-                                                seerattn_threshold=args.threshold,
-                                                seerattn_sliding_window_size=args.sliding_window_size,
-                                                seerattn_token_budget=args.token_budget,
-                                                seerattn_gate_block_size=args.block_size,
-                                                seerattn_implementation = args.attention_implementation,
-                                                use_flash_rope=args.use_fused_kernel,
-                                                fused_norm=args.use_fused_kernel,
-                                                seerattn_output_sparsity=args.profile_sparsity,
-            )
-        elif "Phi3" in config.architectures[0]:
-            model = SeerDecodingPhi3ForCausalLM.from_pretrained(model_name_or_path,
-                                                torch_dtype=torch.bfloat16,
-                                                device_map=device,
-                                                load_gate = args.attention_implementation == "seer_sparse",
-                                                use_cache=True,
-                                                seerattn_sparsity_method=args.sparsity_method,
-                                                seerattn_threshold=args.threshold,
-                                                seerattn_sliding_window_size=args.sliding_window_size,
-                                                seerattn_token_budget=args.token_budget,
-                                                seerattn_gate_block_size=args.block_size,
-                                                seerattn_implementation = args.attention_implementation,
-                                                use_flash_rope=args.use_fused_kernel,
-                                                fused_norm=args.use_fused_kernel,
-                                                seerattn_output_sparsity=args.profile_sparsity,
-            )
+        model_name_lower = model_name_or_path.lower()
+        if "qwen3" in model_name_lower:
+            model_class = SeerDecodingQwen3ForCausalLM
+        elif "qwen" in model_name_lower:
+            model_class = SeerDecodingQwen2ForCausalLM
+        elif "phi" in model_name_lower:
+            model_class = SeerDecodingPhi3ForCausalLM
+        else:
+            raise ValueError(f"model: {model_name_or_path} not supported in SeerDecoding")
+        
+        model = model_class.from_pretrained(model_name_or_path,
+                                            torch_dtype=torch.bfloat16,
+                                            device_map=device,
+                                            load_gate = args.attention_implementation == "seer_sparse",
+                                            use_cache=True,
+                                            seerattn_sparsity_method=args.sparsity_method,
+                                            seerattn_threshold=args.threshold,
+                                            seerattn_sliding_window_size=args.sliding_window_size,
+                                            seerattn_token_budget=args.token_budget,
+                                            seerattn_gate_block_size=args.block_size,
+                                            seerattn_implementation = args.attention_implementation,
+                                            use_flash_rope=args.use_fused_kernel,
+                                            fused_norm=args.use_fused_kernel,
+                                            seerattn_output_sparsity=args.profile_sparsity,
+        )
     elif args.attention_implementation == "fa2":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
