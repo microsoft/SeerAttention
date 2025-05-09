@@ -119,22 +119,20 @@ def infer(args):
         if args.profile_sparsity:
             overall_sparsity = other_info['overall_sparsity']
 
-        sparsity_info_filepath = os.path.join(output_runnum_subdir, "sparsity_info.json")
+            sparsity_info_filepath = os.path.join(output_runnum_subdir, "sparsity_info.json")
 
-        with open(sparsity_info_filepath, 'r') as f:
-            all_batch_sparsitys_info = json.load(f)
+            with open(sparsity_info_filepath, 'r') as f:
+                all_batch_sparsitys_info = json.load(f)
 
-        quantile_sparsities = calculate_quantile_sparsity(all_batch_sparsitys_info, group_size=1000)
-        # len_quantile_sparsities = len(quantile_sparsities)
-        # half_index = (len_quantile_sparsities // 2) - 1
+            quantile_sparsities = calculate_quantile_sparsity(all_batch_sparsitys_info, group_size=1000)
 
-        if len(quantile_sparsities) >= 16:
-            sparsity_16k = quantile_sparsities[15]
-            sparsity_16k_list.append(sparsity_16k)
+            if len(quantile_sparsities) >= 16:
+                sparsity_16k = quantile_sparsities[15]
+                sparsity_16k_list.append(sparsity_16k)
 
-        if len(quantile_sparsities) >= 32:
-            sparsity_32k = quantile_sparsities[31]
-            sparsity_32k_list.append(sparsity_32k)
+            if len(quantile_sparsities) >= 32:
+                sparsity_32k = quantile_sparsities[31]
+                sparsity_32k_list.append(sparsity_32k)
 
 
         print(f"Successfully loaded run{i}!")
@@ -210,11 +208,10 @@ def infer(args):
 
         if len(sparsity_16k_list) > 0:
             average_sparsity_16k = sum(sparsity_16k_list) / len(sparsity_16k_list)
+            print(f"Average sparsity at 16k: {average_sparsity_16k}")
         if len(sparsity_32k_list) > 0:
             average_sparsity_32k = sum(sparsity_32k_list) / len(sparsity_32k_list)
-
-        print(f"Average sparsity at 16k: {average_sparsity_16k}")
-        print(f"Average sparsity at 32k: {average_sparsity_32k}")
+            print(f"Average sparsity at 32k: {average_sparsity_32k}")
 
     overall_summary_filepath = os.path.join(args.output_dir, "overall_summary.txt")
     with open(overall_summary_filepath, "w") as f:

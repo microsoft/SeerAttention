@@ -122,8 +122,7 @@ def infer(args):
         if args.surround_with_messages:
             if args.data_name in ["aime", "math", "olympiadbench"]:
                 messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": cur_prompt}
+                    {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
                 ]
             else:
                 # for gpqa
@@ -142,7 +141,7 @@ def infer(args):
               tensor_parallel_size=len(available_gpus), 
               trust_remote_code=True, 
             #   swap_space=60,
-              gpu_memory_utilization=0.96,
+            #   gpu_memory_utilization=0.96,
               )
 
     # run_num = args.rank * args.repeat + repeat_i

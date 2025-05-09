@@ -28,17 +28,17 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.utils.deprecation import deprecate_kwarg
-from seer_attn.qwen_decode_sparse.configuration_qwen2_seerattn import SeerAttnQwen2Config
+from seer_attn.decode_sparse.phi3.configuration_phi3_seerattn import SeerAttnPhi3Config
 from seer_attn.utils import BaseModelOutputWithPastAndCache, CausalLMOutputWithPastAndCache
-from seer_attn.qwen_decode_sparse.attn_gate_inf import ATTNGATE_CLASSES, get_sparse_attn_mask_from_threshold, get_sparse_attn_mask_from_budget
+from seer_attn.decode_sparse.attn_gate_inf import ATTNGATE_CLASSES, get_sparse_attn_mask_from_threshold, get_sparse_attn_mask_from_budget
 import copy, math, os
 from einops import rearrange
-from seer_attn.qwen_decode_sparse.attention_forward_sparse import sparse_flash_attention_forward
-from seer_attn.qwen_decode_sparse.attention_forward_dense import dense_flash_attention_forward
+from seer_attn.decode_sparse.attention_forward_sparse import sparse_flash_attention_forward
+from seer_attn.decode_sparse.attention_forward_dense import dense_flash_attention_forward
 from seer_attn.kernels.varlen.oracle_sparse import oracle_sparse
 from seer_attn.modules.layernorm import RMSNorm
 from flash_attn.layers.rotary import apply_rotary_emb_func
-from seer_attn.qwen_decode_sparse.cache_utils import KCompressionCache
+from seer_attn.decode_sparse.cache_utils import KCompressionCache
 from seer_attn.modules.common import apply_rotary_pos_emb
 
 
@@ -47,24 +47,25 @@ from huggingface_hub import hf_hub_download
 
 logger = logging.get_logger(__name__)
 
-_CHECKPOINT_FOR_DOC = "meta-qwen2/Qwen2-2-7b-hf"
-_CONFIG_FOR_DOC = "Qwen2Config"
+_CONFIG_FOR_DOC = "Phi3Config"
 
 
-class Qwen2MLP(nn.Module):
+class Phi3MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = ACT2FN[config.hidden_act]
 
-    def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-        return down_proj
+        self.config = config
+        self.gate_up_proj = nn.Linear(config.hidden_size, 2 * config.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        self.activation_fn = ACT2FN[config.hidden_act]
+
+    def forward(self, hidden_states: torch.FloatTensor) -> torch.FloatTensor:
+        up_states = self.gate_up_proj(hidden_states)
+
+        gate, up_states = up_states.chunk(2, dim=-1)
+        up_states = up_states * self.activation_fn(gate)
+
+        return self.down_proj(up_states)
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -99,10 +100,10 @@ def compute_oracle_sparse_mask(q, k, cache_seqlens, block_attention_mask, block_
     return block_sparse_mask
 
 
-class Qwen2SeerAttention(nn.Module):
+class Phi3SeerAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: SeerAttnQwen2Config, layer_idx: int):
+    def __init__(self, config: SeerAttnPhi3Config, layer_idx: int):
         super().__init__()
         self.config = config
         self.block_budget = self.config.seerattn_token_budget // self.config.seerattn_gate_block_size
@@ -111,13 +112,16 @@ class Qwen2SeerAttention(nn.Module):
         self.layer_idx = layer_idx
         self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+        self.num_key_value_heads = config.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
-        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=True)
-        self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
-        self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
+        # self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=False)
+        # self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
+        # self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+        op_size = config.num_attention_heads * self.head_dim + 2 * (config.num_key_value_heads * self.head_dim)
+        self.qkv_proj = nn.Linear(config.hidden_size, op_size, bias=False)
 
         self.attn_gate = ATTNGATE_CLASSES[config.seerattn_k_seq_pooling_type](
             config.seerattn_gate_block_size, 
@@ -151,9 +155,11 @@ class Qwen2SeerAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         q_len = hidden_states.shape[1]
 
-        q = self.q_proj(hidden_states)
-        k = self.k_proj(hidden_states)
-        v = self.v_proj(hidden_states)
+        qkv = self.qkv_proj(hidden_states)
+        query_pos = self.config.num_attention_heads * self.head_dim
+        q = qkv[..., :query_pos]
+        k = qkv[..., query_pos : query_pos + self.num_key_value_heads * self.head_dim]
+        v = qkv[..., query_pos + self.num_key_value_heads * self.head_dim :]
 
         q = rearrange(q, '... (h d) -> ... h d', d=self.head_dim)
         k = rearrange(k, '... (h d) -> ... h d', d=self.head_dim)
@@ -241,10 +247,10 @@ class Qwen2SeerAttention(nn.Module):
         return attn_output, activate_and_original_block_count
 
 
-class Qwen2RMSNorm(nn.Module):
+class Phi3RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
-        Qwen2RMSNorm is equivalent to T5LayerNorm
+        Phi3RMSNorm is equivalent to T5LayerNorm
         """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
@@ -261,21 +267,20 @@ class Qwen2RMSNorm(nn.Module):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
-class Qwen2DecoderLayer(nn.Module):
-    def __init__(self, config: SeerAttnQwen2Config, layer_idx: int):
+class Phi3DecoderLayer(nn.Module):
+    def __init__(self, config: SeerAttnPhi3Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        # self.self_attn = SeerAttnQwen2Attention(config=config, layer_idx=layer_idx)
-        self.mlp = Qwen2MLP(config)
-        self.self_attn = Qwen2SeerAttention(config=config, layer_idx=layer_idx)
-        self.fused_norm = config.fused_norm
+        # self.self_attn = SeerAttnPhi3Attention(config=config, layer_idx=layer_idx)
+        self.mlp = Phi3MLP(config)
+        self.self_attn = Phi3SeerAttention(config=config, layer_idx=layer_idx)
 
-        if config.fused_norm:
-            self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-            self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        else:
-            self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-            self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = Phi3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Phi3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        self.resid_attn_dropout = nn.Dropout(config.resid_pdrop)
+        self.resid_mlp_dropout = nn.Dropout(config.resid_pdrop)
+
         if config.sliding_window and config._attn_implementation != "flash_attention_2":
             logger.warning_once(
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
@@ -314,23 +319,21 @@ class Qwen2DecoderLayer(nn.Module):
             block_attention_mask=block_attention_mask,
             **kwargs,
         )
-        if self.fused_norm:
-            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual, True)
-        else:
-            hidden_states = residual + hidden_states
-            residual = hidden_states
-            hidden_states = self.post_attention_layernorm(hidden_states)
+
+        hidden_states = residual + self.resid_attn_dropout(hidden_states)
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
 
         hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
+        hidden_states = residual + self.resid_mlp_dropout(hidden_states)
 
-        outputs = (hidden_states,activate_and_original_block_count) 
+        outputs = (hidden_states, activate_and_original_block_count) 
         return outputs
 
 
 
-class Qwen2RotaryEmbedding(nn.Module):
-    def __init__(self, config: SeerAttnQwen2Config, device=None):
+class Phi3RotaryEmbedding(nn.Module):
+    def __init__(self, config: SeerAttnPhi3Config, device=None):
         super().__init__()
         # BC: "rope_type" was originally "type"
         if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
@@ -395,11 +398,11 @@ class Qwen2RotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
-class Qwen2PreTrainedModel(PreTrainedModel):
-    config_class = SeerAttnQwen2Config
+class Phi3PreTrainedModel(PreTrainedModel):
+    config_class = SeerAttnPhi3Config
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["SeerAttnQwen2DecoderLayer"]
+    _no_split_modules = ["SeerAttnPhi3DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn_2 = True
     _supports_sdpa = True
@@ -421,22 +424,22 @@ class Qwen2PreTrainedModel(PreTrainedModel):
                 module.weight.data[module.padding_idx].zero_()
 
 
-class Qwen2Model(Qwen2PreTrainedModel):
-    def __init__(self, config: SeerAttnQwen2Config):
+class Phi3Model(Phi3PreTrainedModel):
+    def __init__(self, config: SeerAttnPhi3Config):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [Qwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [Phi3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = Qwen2RotaryEmbedding(config=config)
+        self.norm = Phi3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = Phi3RotaryEmbedding(config=config)
         self.gradient_checkpointing = False
         block_config = copy.deepcopy(config)
         block_config.hidden_size = config.seerattn_gate_hidden_size * config.num_attention_heads
-        self.block_rotary_emb = Qwen2RotaryEmbedding(config=block_config)
+        self.block_rotary_emb = Phi3RotaryEmbedding(config=block_config)
        
         self.gradient_checkpointing = False
         self.num_layers = config.num_hidden_layers
@@ -562,14 +565,14 @@ class Qwen2Model(Qwen2PreTrainedModel):
         return mask
 
 
-class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
+class SeerDecodingPhi3ForCausalLM(Phi3PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = Qwen2Model(config)
+        self.model = Phi3Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.num_layers = config.num_hidden_layers
@@ -765,7 +768,7 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
     def from_pretrained(cls, pretrained_model_name_or_path, load_gate=True, *model_args, **kwargs):
         # Call the original method first
         if load_gate:
-            config = SeerAttnQwen2Config.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+            config = SeerAttnPhi3Config.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
             base_model = config.base_model
             for key in list(kwargs.keys()):
                 if hasattr(config, key) and key != "torch_dtype":

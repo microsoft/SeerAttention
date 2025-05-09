@@ -18,7 +18,7 @@ from Utils.math_normalization import *
 from Utils.grader import *
 import pickle
 from math import comb
-from seer_attn import SeerDecodingQwen2ForCausalLM
+from seer_attn import SeerDecodingQwen2ForCausalLM, SeerDecodingPhi3ForCausalLM
 from generation_utils import batch_exist_generate
 from typing import Optional, Tuple
 
@@ -150,8 +150,9 @@ def infer(args):
     if args.profile_sparsity:
         assert args.attention_implementation in ["seer_sparse", "oracle_sparse"], "profile_sparsity only support seer_sparse and oracle_sparse"
 
-    if args.attention_implementation == "seer_sparse":
-        config = AutoConfig.from_pretrained(model_name_or_path)
+    config = AutoConfig.from_pretrained(model_name_or_path)
+    
+    if args.attention_implementation == "seer_sparse": 
         base_model = config.base_model
         tokenizer = AutoTokenizer.from_pretrained(
             base_model,
@@ -179,8 +180,7 @@ def infer(args):
         if args.surround_with_messages:
             if args.data_name in ["aime", "math", "olympiadbench"]:
                 messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": cur_prompt}
+                    {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
                 ]
             else:
                 # for gpqa
@@ -230,7 +230,8 @@ def infer(args):
 
 
     if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse" or args.attention_implementation == "seer_dense":
-        model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
+        if "Qwen2" in config.architectures[0]:
+            model = SeerDecodingQwen2ForCausalLM.from_pretrained(model_name_or_path,
                                                 torch_dtype=torch.bfloat16,
                                                 device_map=device,
                                                 load_gate = args.attention_implementation == "seer_sparse",
@@ -244,8 +245,23 @@ def infer(args):
                                                 use_flash_rope=args.use_fused_kernel,
                                                 fused_norm=args.use_fused_kernel,
                                                 seerattn_output_sparsity=args.profile_sparsity,
-        )
-
+            )
+        elif "Phi3" in config.architectures[0]:
+            model = SeerDecodingPhi3ForCausalLM.from_pretrained(model_name_or_path,
+                                                torch_dtype=torch.bfloat16,
+                                                device_map=device,
+                                                load_gate = args.attention_implementation == "seer_sparse",
+                                                use_cache=True,
+                                                seerattn_sparsity_method=args.sparsity_method,
+                                                seerattn_threshold=args.threshold,
+                                                seerattn_sliding_window_size=args.sliding_window_size,
+                                                seerattn_token_budget=args.token_budget,
+                                                seerattn_gate_block_size=args.block_size,
+                                                seerattn_implementation = args.attention_implementation,
+                                                use_flash_rope=args.use_fused_kernel,
+                                                fused_norm=args.use_fused_kernel,
+                                                seerattn_output_sparsity=args.profile_sparsity,
+            )
     elif args.attention_implementation == "fa2":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
@@ -263,6 +279,8 @@ def infer(args):
         raise ValueError(f"Unknown attention implementation: {args.attention_implementation}")
     
     model.eval()
+    eos_id_from_config = getattr(model.generation_config, "eos_token_id", None)
+    eos_token_id = eos_id_from_config[0] if isinstance(eos_id_from_config, list) else eos_id_from_config
 
     batch_size = args.batch_size
 
@@ -315,8 +333,9 @@ def infer(args):
 
         for j in range(len(outputs)):
             output_seq = outputs[j]
-            output_tokens = (output_seq != tokenizer.pad_token_id).sum().item()
-            prompt_tokens = (batch_input_ids[j] != tokenizer.pad_token_id).sum().item()
+            
+            output_tokens = (output_seq != eos_token_id).sum().item()
+            prompt_tokens = (batch_input_ids[j] != eos_token_id).sum().item()
             generate_lens.append(output_tokens - prompt_tokens)
 
         batch_results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
