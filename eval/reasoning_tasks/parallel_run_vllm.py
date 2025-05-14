@@ -11,7 +11,8 @@ task_config = {
     "aime": {"total_run": 64},
     "math": {"total_run": 8},
     "gpqa": {"total_run": 16},
-    "olympiadbench": {"total_run": 8}
+    "olympiadbench": {"total_run": 8},
+    "livecodebench": {"total_run": 8},
 }
 
 if __name__ == "__main__":

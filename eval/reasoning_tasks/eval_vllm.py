@@ -91,7 +91,6 @@ def get_three_prompt(prompt_type, data_name):
 def infer(args):
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
-    device = f"cuda:{args.rank}"
 
     available_gpus = os.environ['CUDA_VISIBLE_DEVICES'].split(',')
     if len(available_gpus) == 1:
@@ -144,7 +143,6 @@ def infer(args):
             #   gpu_memory_utilization=0.96,
               )
 
-    # run_num = args.rank * args.repeat + repeat_i
     generate_lens = []
     
     output_runnum_subdir = os.path.join(args.output_dir, f"run_{args.run_id}")
@@ -171,7 +169,7 @@ def infer(args):
 
 
     with open(completion_filepath, 'w') as f:
-        json.dump(completions, f)
+        json.dump(completions, f, indent=4)
         
 
     other_info = {

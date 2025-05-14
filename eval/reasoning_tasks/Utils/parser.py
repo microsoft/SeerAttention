@@ -548,7 +548,7 @@ def parse_ground_truth(example: Dict[str, Any], data_name):
 
 def parse_question(example, data_name=None):
     question = ""
-    for key in ["question", "problem", "Question", "input"]:
+    for key in ["question", "problem", "Question", "input", "prompt"]:
         if key in example:
             question = example[key]
             break
