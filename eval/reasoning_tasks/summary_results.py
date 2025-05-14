@@ -12,9 +12,11 @@ from Utils.parser import *
 from Utils.data_loader import load_data
 from Utils.math_normalization import *
 from Utils.grader import *
+from Utils.livecodebench import compute_scores as livecodebench_compute_scores
 import pickle
 from math import comb
 import glob
+import subprocess
 
 def calculate_quantile_sparsity(
     all_batch_sparsitys_info: List[List[Optional[Tuple[Tuple[int, int], ...]]]],
@@ -23,7 +25,7 @@ def calculate_quantile_sparsity(
     """
     Calculates sparsity for each quantile group of sequence steps.
 
-    Each group aggregates results over `group_size` sequence steps from the flattened list.
+    Each group aggregates results over `group_size` sequence steps across all batches.
     The sparsity is computed as 1 - (total activated blocks / total original blocks) for that group.
 
     Args:
@@ -31,33 +33,57 @@ def calculate_quantile_sparsity(
         group_size: Number of sequence steps per quantile group.
 
     Returns:
-        A list of sparsity values for each quantile.
+        A list of sparsity values for each quantile group.
     """
-    # Flatten the sparsity info by summing over layers per sequence step.
-    flattened = []
-    for each_batch_sequence_info in all_batch_sparsitys_info:
-        for each_step_sparsitys_info in each_batch_sequence_info:
+    if not all_batch_sparsitys_info:
+        return []
+
+    # Compute maximum number of steps across all batches
+    lengths = [len(batch_sequence_info) for batch_sequence_info in all_batch_sparsitys_info]
+    max_steps = max(lengths) if lengths else 0
+
+    if max_steps == 0:
+        return []
+
+    # Initialize per-step totals with (0, 0)
+    per_step_totals = [(0, 0) for _ in range(max_steps)]
+
+    # Aggregate across all batches for each step
+    for batch_sequence_info in all_batch_sparsitys_info:
+        for step_idx, step_info in enumerate(batch_sequence_info):
+            if step_info is None:
+                continue
             act = 0
             orig = 0
-            for each_layer_sparsitys_info in each_step_sparsitys_info:
-                act += each_layer_sparsitys_info[0]
-                orig += each_layer_sparsitys_info[1]
-            flattened.append((act, orig))
-    
+            for layer_info in step_info:
+                act += layer_info[0]
+                orig += layer_info[1]
+            per_step_totals[step_idx] = (
+                per_step_totals[step_idx][0] + act,
+                per_step_totals[step_idx][1] + orig
+            )
+
+    # Group steps and compute sparsity for each group
     quantile_results = []
-    num_groups = (len(flattened) + group_size - 1) // group_size  # ceiling division
+    num_groups = (max_steps + group_size - 1) // group_size
+
     for i in range(num_groups):
         start = i * group_size
-        end = min((i + 1) * group_size, len(flattened))
-        group = flattened[start:end]
-        total_act = sum(item[0] for item in group)
-        total_orig = sum(item[1] for item in group)
-        if total_orig == 0:
+        end = min((i + 1) * group_size, max_steps)
+        group_act = 0
+        group_orig = 0
+
+        for step_idx in range(start, end):
+            group_act += per_step_totals[step_idx][0]
+            group_orig += per_step_totals[step_idx][1]
+
+        if group_orig == 0:
             sparsity = 0.0
         else:
-            sparsity = 1 - total_act / total_orig
+            sparsity = 1 - group_act / group_orig
         sparsity = round(sparsity, 2)
         quantile_results.append(sparsity)
+
     return quantile_results
 
 
@@ -90,6 +116,15 @@ def infer(args):
     limit = args.limit
     if limit > 0:
         examples = examples[:limit]
+
+    if args.data_name == "livecodebench":
+        if not os.path.exists("./data/livecodebench/livecodebench_v5_tests/0.json"):
+            subprocess.run(["python", "./data/livecodebench/download_tests.py"])
+
+        with open("./data/livecodebench/test.jsonl", "r") as f:
+            jobs = [json.loads(line) for line in f]
+            if limit > 0:
+                jobs = jobs[:limit]
 
     Acc_list = []
     generate_lens_list = []
@@ -137,21 +172,29 @@ def infer(args):
 
         print(f"Successfully loaded run{i}!")
 
-        # check all the correct
-        correct_cnt = 0
-        for i in range(len(completions)):
-            d = examples[i]
-            gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
-            generated_responses = [completions[i]]
-            generated_answers = [extract_answer(generated_response, args.data_name) for generated_response in generated_responses]
-            is_correct_list = [check_is_correct(generated_answer, gt_ans) for generated_answer in generated_answers]
-            is_correct = any(is_correct_list)
-            if is_correct:
-                correct_cnt += 1
+        if args.data_name == "livecodebench":
+            cache_path = os.path.join(output_runnum_subdir, "cache.jsonl")
+            Acc = livecodebench_compute_scores(jobs, completions, cache_path)
+            print(f"Acc: {Acc}")
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
 
+        else:
+            # check all the correct
+            correct_cnt = 0
+            for i in range(len(completions)):
+                d = examples[i]
+                gt_cot, gt_ans = parse_ground_truth(d, args.data_name)
+                generated_responses = [completions[i]]
+                generated_answers = [extract_answer(generated_response, args.data_name) for generated_response in generated_responses]
+                is_correct_list = [check_is_correct(generated_answer, gt_ans) for generated_answer in generated_answers]
+                is_correct = any(is_correct_list)
+                if is_correct:
+                    correct_cnt += 1
 
-        Acc = correct_cnt / len(examples)
-        print("Acc:",Acc)
+            Acc = correct_cnt / len(examples)
+            print("Acc:",Acc)
+
 
         average_generate_len = sum(generate_lens) / len(generate_lens)
         max_generate_len = max(generate_lens)

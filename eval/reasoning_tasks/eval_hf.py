@@ -183,7 +183,7 @@ def infer(args):
                     {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
                 ]
             else:
-                # for gpqa
+                # for gpqa, livecodebench
                 messages = [
                     {"role": "user", "content": cur_prompt}
                 ]

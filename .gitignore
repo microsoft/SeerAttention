@@ -412,5 +412,4 @@ cache_dir
 *.egg-info
 test_eval*
 plot*
-# eval_dense*
-# eval_oracle*
+livecodebench_v5_test*

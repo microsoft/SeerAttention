@@ -9,6 +9,7 @@ tasks="aime,math,gpqa,olympiadbench"
 
 python parallel_run_hf.py \
       --model_dir "$model_dir" \
+      --model_size "$model_size" \
       --tasks "$tasks" \
       --output_dir "$output_dir" \
       --attention_implementation "$attention_implementation" \

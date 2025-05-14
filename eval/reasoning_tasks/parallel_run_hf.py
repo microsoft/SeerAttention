@@ -7,27 +7,32 @@ import time
 from collections import deque # Use deque for efficient pop/append
 
 
-def Choose_task_config(model_size):
-    if model_size == "7B" or model_size == "8B":
-       task_config = {
-            "aime": {"bs": 30, "total_run": 64},
-            "math": {"bs": 500, "total_run": 8},
-            "gpqa": {"bs": 200, "total_run": 16},
-            "olympiadbench": {"bs": 120, "total_run": 8}
-        }
-    elif model_size == "14B":
-        task_config = {
-            "aime": {"bs": 30, "total_run": 64},
-            "math": {"bs": 250, "total_run": 8},
-            "gpqa": {"bs": 100, "total_run": 16},
-            "olympiadbench": {"bs": 60, "total_run": 8}
-        }
+def Choose_task_config(model_size, output_dir):
+    output_dir = output_dir.lower()
+    if model_size != "32B":
+        if "phi" in output_dir:
+            task_config = {
+                "aime": {"bs": 30, "total_run": 64},
+                "math": {"bs": 100, "total_run": 8},
+                "gpqa": {"bs": 50, "total_run": 16},
+                "olympiadbench": {"bs": 30, "total_run": 8},
+                "livecodebench": {"bs": 30, "total_run": 8},
+            }
+        else:
+            task_config = {
+                "aime": {"bs": 30, "total_run": 64},
+                "math": {"bs": 250, "total_run": 8},
+                "gpqa": {"bs": 100, "total_run": 16},
+                "olympiadbench": {"bs": 60, "total_run": 8},
+                "livecodebench": {"bs": 60, "total_run": 8},
+            }
     elif model_size == "32B":
         task_config = {
             "aime": {"bs": 30, "total_run": 64},
             "math": {"bs": 100, "total_run": 8},
             "gpqa": {"bs": 50, "total_run": 16},
-            "olympiadbench": {"bs": 30, "total_run": 8}
+            "olympiadbench": {"bs": 30, "total_run": 8},
+            "livecodebench": {"bs": 30, "total_run": 8},
         }
     else:
         raise ValueError(f"Not support model_size: {model_size}")
@@ -73,7 +78,7 @@ if __name__ == "__main__":
     output_dir = os.path.join(args.output_dir, model_subfolder)
     attention_implementation = args.attention_implementation
 
-    task_config = Choose_task_config(args.model_size)
+    task_config = Choose_task_config(args.model_size, output_dir)
 
     for task in tasks:
         if task not in task_config:
