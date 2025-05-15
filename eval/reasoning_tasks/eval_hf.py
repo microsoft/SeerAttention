@@ -150,7 +150,7 @@ def infer(args):
     if args.profile_sparsity:
         assert args.attention_implementation in ["seer_sparse", "oracle_sparse"], "profile_sparsity only support seer_sparse and oracle_sparse"
 
-    config = AutoConfig.from_pretrained(model_name_or_path)
+    config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
     
     if args.attention_implementation == "seer_sparse": 
         base_model = config.base_model
@@ -237,6 +237,8 @@ def infer(args):
             model_class = SeerDecodingQwen2ForCausalLM
         elif "phi" in model_name_lower:
             model_class = SeerDecodingPhi3ForCausalLM
+        elif "mimo" in model_name_lower:
+            model_class = SeerDecodingQwen2ForCausalLM
         else:
             raise ValueError(f"model: {model_name_or_path} not supported in SeerDecoding")
         
