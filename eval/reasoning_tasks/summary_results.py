@@ -94,7 +94,6 @@ def parse_list(arg):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name_or_path', type=str, default="./", help="model dir")
-    parser.add_argument('--batch_size', type=int, default=16, help="batch_size")
     parser.add_argument('--limit', type=int, default=-1, help="limit")
     parser.add_argument("--data_dir", default="./data", type=str)
     parser.add_argument('--data_name', type=str, default="math", help='identify how to extract answer')
