@@ -2,6 +2,7 @@ model_dir="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
 output_dir="./result_dense"
 model_size="14B"
 attention_implementation="fa2"
+max_tokens=32768
 num_gpus=8
 limit=-1
 
@@ -17,3 +18,4 @@ python parallel_run_hf.py \
       --threshold "0" \
       --num_gpus "$num_gpus" \
       --limit "$limit" \
+      --max_tokens "$max_tokens" \

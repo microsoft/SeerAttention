@@ -27,9 +27,12 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=-1,
                         help="Limit for the number of samples to process")
     parser.add_argument("--num_gpus", default="8", type=int)
+    parser.add_argument("--max_tokens", default=32768, type=int,
+                        help="Maximum number of tokens to generate")
     args = parser.parse_args()
     limit = args.limit
     num_gpus = args.num_gpus
+    max_tokens = args.max_tokens
 
     model_dir = args.model_dir
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
@@ -103,6 +106,7 @@ if __name__ == "__main__":
                     "--limit", str(limit),
                     "--rank", str(gpu_id), 
                     "--run_id", str(current_run_id), # Pass the unique run ID
+                    "--max_tokens", str(max_tokens),
                 ]
                 
                 # Launch the process

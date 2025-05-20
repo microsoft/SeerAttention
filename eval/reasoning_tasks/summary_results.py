@@ -1,6 +1,4 @@
 import json
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
-import torch
 from typing import List, Optional, Tuple
 import re
 import importlib.util
@@ -15,7 +13,6 @@ from Utils.grader import *
 from Utils.livecodebench import compute_scores as livecodebench_compute_scores
 import pickle
 from math import comb
-import glob
 import subprocess
 
 def calculate_quantile_sparsity(
@@ -94,7 +91,6 @@ def parse_list(arg):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name_or_path', type=str, default="./", help="model dir")
-    parser.add_argument('--batch_size', type=int, default=16, help="batch_size")
     parser.add_argument('--limit', type=int, default=-1, help="limit")
     parser.add_argument("--data_dir", default="./data", type=str)
     parser.add_argument('--data_name', type=str, default="math", help='identify how to extract answer')
@@ -139,10 +135,17 @@ def infer(args):
     for i in range(num_runs):
         output_runnum_subdir = os.path.join(args.output_dir, f"run_{i}")
 
-        completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
-        
+        completion_filepath = os.path.join(output_runnum_subdir, "completions.jsonl")
+
+        completions = []
         with open(completion_filepath, 'r') as f:
-            completions = json.load(f)
+            for line in f:
+                item = json.loads(line.strip())
+                completions.append(item["completion"])
+
+        # completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
+        # with open(completion_filepath, 'r') as f:
+        #     completions = json.load(f)
         
         other_info_filepath = os.path.join(output_runnum_subdir, "other_info.json")
 

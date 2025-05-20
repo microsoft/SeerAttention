@@ -59,6 +59,7 @@ if __name__ == "__main__":
     parser.add_argument("--sliding_window_size", default="0", type=str)
     parser.add_argument("--threshold", default="0", type=str)
     parser.add_argument("--token_budget", default="2048", type=str)
+    parser.add_argument("--max_tokens", default="32768", type=str)
     parser.add_argument("--profile_sparsity", action="store_true",
                         help="Flag to profile sparsity in eval.py")
     args = parser.parse_args()
@@ -176,6 +177,7 @@ if __name__ == "__main__":
                             "--sparsity_method", sparsity_method,
                             "--block_size", str(block_size),
                             "--run_id", str(current_run_id),
+                            "--max_tokens", str(max_tokens),
                         ] + cli_params
 
                         if args.profile_sparsity:
@@ -187,24 +189,24 @@ if __name__ == "__main__":
                     if (run_counter < total_run and not available_gpus) or (run_counter >= total_run and active_procs):
                         time.sleep(5)
 
-                get_results_cmd = [
-                    "python", "summary_results.py",
-                    "--model_name_or_path", model_dir,
-                    "--data_name", task,
-                    "--batch_size", str(bs),
-                    "--limit", str(limit),
-                    "--output_dir", output_config_subdir,
-                    "--total_run", str(total_run),
-                ]
+                if task != "livecodebench":
+                    get_results_cmd = [
+                        "python", "summary_results.py",
+                        "--model_name_or_path", model_dir,
+                        "--data_name", task,
+                        "--limit", str(limit),
+                        "--output_dir", output_config_subdir,
+                        "--total_run", str(total_run),
+                    ]
 
-                if args.profile_sparsity:
-                    get_results_cmd.append("--profile_sparsity")
+                    if args.profile_sparsity:
+                        get_results_cmd.append("--profile_sparsity")
 
-                try:
-                    subprocess.run(get_results_cmd, check=True)
-                    print(f"Successfully generated results for {param_desc}")
-                except subprocess.CalledProcessError as e:
-                    print(f"Error generating results: {e}")
+                    try:
+                        subprocess.run(get_results_cmd, check=True)
+                        print(f"Successfully generated results for {param_desc}")
+                    except subprocess.CalledProcessError as e:
+                        print(f"Error generating results: {e}")
             print(f"\nCompleted: {block_size}")
         print(f"\nCompleted: {task}")
 
