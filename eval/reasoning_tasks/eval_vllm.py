@@ -33,7 +33,7 @@ def parse_args():
     parser.add_argument("--split", default="test", type=str)
     parser.add_argument('--start_idx', type=int, default=0, help="data[start:end]")
     parser.add_argument('--end_idx', type=int, default=-1, help="data[start:end], if -1, data[start:]")
-    parser.add_argument("--max_tokens", default=38912, type=int)
+    parser.add_argument("--max_tokens", default=32768, type=int)
     parser.add_argument("--prompt_type", default="qwen-instruct", type=str)
     parser.add_argument("--prompt_file_path", default="./prompts", type=str)
     parser.add_argument("--surround_with_messages", action="store_true")
@@ -89,6 +89,9 @@ def get_three_prompt(prompt_type, data_name):
 
 
 def infer(args):
+    if "qwen3" in args.model_name_or_path.lower():
+        args.max_tokens = 38912
+
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
 
