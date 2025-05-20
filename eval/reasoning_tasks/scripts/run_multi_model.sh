@@ -13,6 +13,7 @@ tasks=${TASKS:-"aime"}
 attention_implementation="seer_sparse"
 sparsity_method="threshold"
 model_size="14B"
+max_tokens=32768
 num_gpus=8
 limit=-1
 
@@ -51,6 +52,8 @@ for model in "$models_dir"/*/ ; do
             --threshold "$threshold" \
             --num_gpus "$num_gpus" \
             --limit "$limit" \
+            --max_tokens "$max_tokens" \
+
         
         echo "Completed evaluation for model: ${model_basename}"
     fi

@@ -142,6 +142,10 @@ def infer(args):
             for line in f:
                 item = json.loads(line.strip())
                 completions.append(item["completion"])
+
+        # completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
+        # with open(completion_filepath, 'r') as f:
+        #     completions = json.load(f)
         
         other_info_filepath = os.path.join(output_runnum_subdir, "other_info.json")
 
