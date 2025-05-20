@@ -32,6 +32,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     limit = args.limit
     num_gpus = args.num_gpus
+    max_tokens = args.max_tokens
 
     model_dir = args.model_dir
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
