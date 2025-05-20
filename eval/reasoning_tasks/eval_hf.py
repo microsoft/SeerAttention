@@ -78,7 +78,7 @@ def parse_args():
     parser.add_argument("--data_dir", default="./data", type=str)
     parser.add_argument('--data_name', type=str, default="math", help='identify how to extract answer')
     parser.add_argument("--split", default="test", type=str)
-    parser.add_argument("--max_tokens", default=38912, type=int)
+    parser.add_argument("--max_tokens", default=32768, type=int)
     parser.add_argument("--prompt_type", default="qwen-instruct", type=str)
     parser.add_argument("--prompt_file_path", default="./prompts", type=str)
     parser.add_argument("--surround_with_messages", action="store_true")
@@ -134,6 +134,9 @@ def get_three_prompt(prompt_type, data_name):
 
 
 def infer(args):
+    if "qwen3" in args.model_name_or_path.lower():
+        args.max_tokens = 38912
+        
     print(args)
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
