@@ -89,8 +89,6 @@ def get_three_prompt(prompt_type, data_name):
 
 
 def infer(args):
-    if "qwen3" in args.model_name_or_path.lower():
-        args.max_tokens = 38912
 
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
