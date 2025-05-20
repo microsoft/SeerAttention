@@ -1,6 +1,4 @@
 import json
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
-import torch
 from typing import List, Optional, Tuple
 import re
 import importlib.util
@@ -15,7 +13,6 @@ from Utils.grader import *
 from Utils.livecodebench import compute_scores as livecodebench_compute_scores
 import pickle
 from math import comb
-import glob
 import subprocess
 
 def calculate_quantile_sparsity(
@@ -138,10 +135,13 @@ def infer(args):
     for i in range(num_runs):
         output_runnum_subdir = os.path.join(args.output_dir, f"run_{i}")
 
-        completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
-        
+        completion_filepath = os.path.join(output_runnum_subdir, "completions.jsonl")
+
+        completions = []
         with open(completion_filepath, 'r') as f:
-            completions = json.load(f)
+            for line in f:
+                item = json.loads(line.strip())
+                completions.append(item["completion"])
         
         other_info_filepath = os.path.join(output_runnum_subdir, "other_info.json")
 

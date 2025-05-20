@@ -78,7 +78,7 @@ def parse_args():
     parser.add_argument("--data_dir", default="./data", type=str)
     parser.add_argument('--data_name', type=str, default="math", help='identify how to extract answer')
     parser.add_argument("--split", default="test", type=str)
-    parser.add_argument("--max_tokens", default=32768, type=int)
+    parser.add_argument("--max_tokens", default=38912, type=int)
     parser.add_argument("--prompt_type", default="qwen-instruct", type=str)
     parser.add_argument("--prompt_file_path", default="./prompts", type=str)
     parser.add_argument("--surround_with_messages", action="store_true")
@@ -182,6 +182,7 @@ def infer(args):
                 messages = [
                     {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
                 ]
+                
             else:
                 # for gpqa, livecodebench
                 messages = [
@@ -195,7 +196,7 @@ def infer(args):
     output_runnum_subdir = os.path.join(args.output_dir, f"run_{args.run_id}")
     os.makedirs(output_runnum_subdir, exist_ok=True)
 
-    completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
+    completion_filepath = os.path.join(output_runnum_subdir, "completions.jsonl")
     sparsity_info_filepath = os.path.join(output_runnum_subdir, "sparsity_info.json")
     other_info_filepath = os.path.join(output_runnum_subdir, "other_info.json")
 
@@ -209,7 +210,9 @@ def infer(args):
     if os.path.exists(completion_filepath):
         print(f"Loading checkpoint from {completion_filepath}")
         with open(completion_filepath, 'r') as f:
-            completions = json.load(f)
+            for line in f:
+                item = json.loads(line.strip())
+                completions.append(item["completion"])
             start_i = len(completions)
             print(f"Resuming from {start_i}...")
         if start_i == len(examples):
@@ -339,7 +342,9 @@ def infer(args):
         
     
         with open(completion_filepath, 'w') as f:
-            json.dump(completions, f, indent=4)
+            for completion in completions:
+                json.dump({"completion": completion}, f)
+                f.write('\n')
             
         if args.profile_sparsity:
             with open(sparsity_info_filepath, 'w') as f:
@@ -362,15 +367,6 @@ def infer(args):
         total_activate_count, total_original_count, overall_sparsity_ratio = calculate_overall_sparsity(all_batch_sparsitys_info)
         print("Overall_sparsity: ", overall_sparsity_ratio)
         
-    
-    with open(completion_filepath, 'w') as f:
-        json.dump(completions, f, indent=4)
-        
-
-    if args.profile_sparsity:
-        # sparsity_info = {"sparsity_info": all_batch_sparsitys_info}
-        with open(sparsity_info_filepath, 'w') as f:
-            json.dump(all_batch_sparsitys_info, f, indent=4)
 
     if args.profile_sparsity:
         other_info = {
