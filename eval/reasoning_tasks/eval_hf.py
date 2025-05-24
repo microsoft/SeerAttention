@@ -179,7 +179,7 @@ def infer(args):
         else:
             cur_prompt = question_format.format(question=question)
         if args.surround_with_messages:
-            if args.data_name in ["aime24", "aime25", "math", "olympiadbench"]:
+            if args.data_name in ["aime24", "math", "olympiadbench"]:
                 messages = [
                     {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
                 ]
@@ -193,7 +193,7 @@ def infer(args):
         prompt_batch.append(cur_prompt)
 
     
-        
+    print(prompt_batch[0])
     output_runnum_subdir = os.path.join(args.output_dir, f"run_{args.run_id}")
     os.makedirs(output_runnum_subdir, exist_ok=True)
 
