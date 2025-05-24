@@ -12,7 +12,8 @@ def Choose_task_config(model_size, output_dir):
     if model_size != "32B":
         if "phi" in output_dir:
             task_config = {
-                "aime": {"bs": 30, "total_run": 64},
+                "aime24": {"bs": 30, "total_run": 64},
+                "aime25": {"bs": 30, "total_run": 64},
                 "math": {"bs": 100, "total_run": 8},
                 "gpqa": {"bs": 50, "total_run": 16},
                 "olympiadbench": {"bs": 30, "total_run": 8},
@@ -20,7 +21,8 @@ def Choose_task_config(model_size, output_dir):
             }
         else:
             task_config = {
-                "aime": {"bs": 30, "total_run": 64},
+                "aime24": {"bs": 30, "total_run": 64},
+                "aime25": {"bs": 30, "total_run": 64},
                 "math": {"bs": 250, "total_run": 8},
                 "gpqa": {"bs": 100, "total_run": 16},
                 "olympiadbench": {"bs": 60, "total_run": 8},
@@ -28,7 +30,8 @@ def Choose_task_config(model_size, output_dir):
             }
     elif model_size == "32B":
         task_config = {
-            "aime": {"bs": 30, "total_run": 64},
+            "aime24": {"bs": 30, "total_run": 64},
+            "aime25": {"bs": 30, "total_run": 64},
             "math": {"bs": 100, "total_run": 8},
             "gpqa": {"bs": 50, "total_run": 16},
             "olympiadbench": {"bs": 30, "total_run": 8},
