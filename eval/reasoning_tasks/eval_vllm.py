@@ -120,7 +120,7 @@ def infer(args):
         else:
             cur_prompt = question_format.format(question=question)
         if args.surround_with_messages:
-            if args.data_name in ["aime", "math", "olympiadbench"]:
+            if args.data_name in ["aime24", "aime25", "math", "olympiadbench"]:
                 messages = [
                     {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
                 ]
@@ -149,7 +149,7 @@ def infer(args):
     output_runnum_subdir = os.path.join(args.output_dir, f"run_{args.run_id}")
     os.makedirs(output_runnum_subdir, exist_ok=True)
 
-    completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
+    completion_filepath = os.path.join(output_runnum_subdir, "completions.jsonl")
     other_info_filepath = os.path.join(output_runnum_subdir, "other_info.json")
 
     completions = []
@@ -170,7 +170,10 @@ def infer(args):
 
 
     with open(completion_filepath, 'w') as f:
-        json.dump(completions, f, indent=4)
+        for completion in completions:
+            json.dump({"completion": completion}, f)
+            f.write('\n')
+
         
 
     other_info = {

@@ -8,7 +8,8 @@ from collections import deque # Use deque for efficient pop/append
 
 
 task_config = {
-    "aime": {"total_run": 64},
+    "aime24": {"total_run": 64},
+    "aime25": {"total_run": 64},
     "math": {"total_run": 8},
     "gpqa": {"total_run": 16},
     "olympiadbench": {"total_run": 8},
