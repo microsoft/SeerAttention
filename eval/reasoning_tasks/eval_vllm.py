@@ -120,7 +120,7 @@ def infer(args):
         else:
             cur_prompt = question_format.format(question=question)
         if args.surround_with_messages:
-            if args.data_name in ["aime", "math", "olympiadbench"]:
+            if args.data_name in ["aime24", "aime25", "math", "olympiadbench"]:
                 messages = [
                     {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
                 ]
