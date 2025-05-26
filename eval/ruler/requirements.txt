@@ -1,5 +1,5 @@
 torch==2.4.1
-transformers==4.44.2
+transformers==4.50.0
 flask
 flask_restful
 sshtunnel_requests
