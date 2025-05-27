@@ -108,7 +108,7 @@ def get_conversation_prompt_by_messages(tokenizer, messages):
     return text
 
 def get_three_prompt(prompt_type, data_name):
-    file_path = os.path.join(".", "prompts", prompt_type, f"{data_name}.py")
+    file_path = os.path.join(".", "prompts", prompt_type, f"prompt.py")
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
     spec = importlib.util.spec_from_file_location("dynamic_module", file_path)
@@ -179,11 +179,10 @@ def infer(args):
         else:
             cur_prompt = question_format.format(question=question)
         if args.surround_with_messages:
-            if args.data_name in ["aime", "math", "olympiadbench"]:
+            if args.data_name in ["aime24", "aime25", "math", "olympiadbench"]:
                 messages = [
                     {"role": "user", "content": cur_prompt + "\nPlease reason step by step, and put your final answer within \\boxed{}."}
                 ]
-                
             else:
                 # for gpqa, livecodebench
                 messages = [
@@ -193,7 +192,7 @@ def infer(args):
         prompt_batch.append(cur_prompt)
 
     
-        
+    print(prompt_batch[0])
     output_runnum_subdir = os.path.join(args.output_dir, f"run_{args.run_id}")
     os.makedirs(output_runnum_subdir, exist_ok=True)
 
