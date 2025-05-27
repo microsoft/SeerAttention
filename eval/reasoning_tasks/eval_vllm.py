@@ -63,7 +63,7 @@ def get_conversation_prompt_by_messages(tokenizer, messages):
     return text
 
 def get_three_prompt(prompt_type, data_name):
-    file_path = os.path.join(".", "prompts", prompt_type, f"{data_name}.py")
+    file_path = os.path.join(".", "prompts", prompt_type, f"prompt.py")
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
     spec = importlib.util.spec_from_file_location("dynamic_module", file_path)
