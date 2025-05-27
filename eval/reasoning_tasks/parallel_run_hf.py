@@ -211,6 +211,7 @@ if __name__ == "__main__":
                         print(f"Successfully generated results for {param_desc}")
                     except subprocess.CalledProcessError as e:
                         print(f"Error generating results: {e}")
+                        
             print(f"\nCompleted: {block_size}")
         print(f"\nCompleted: {task}")
 

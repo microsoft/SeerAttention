@@ -414,3 +414,4 @@ test_eval*
 plot*
 livecodebench_v5_test*
 eval_livecodebench*
+kernel_test*
