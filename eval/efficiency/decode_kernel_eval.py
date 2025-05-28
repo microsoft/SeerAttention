@@ -1,13 +1,6 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-
 import torch
-import torch.nn.functional as F
-import tilelang
-from tilelang.autotuner import *
-import tilelang.language as T
-from einops import rearrange, einsum
 import argparse
+import os
 
 import time
 import math
@@ -33,11 +26,10 @@ def main(batch=8,
          dim_v=128,
          sparse_ratio=0.8,
          block_size=32,
-         test_leftpad=False):
+        ):
     batch, heads, heads_kv, max_cache_seqlen, dim, dim_v = batch, heads, heads_kv, max_cache_seqlen, dim, dim_v
     sparse_ratio = sparse_ratio
     block_size = block_size
-    test_leftpad = test_leftpad
 
     max_selected_blocks = int(math.ceil(max_cache_seqlen * (1 - sparse_ratio) / block_size))
     print("max_selected_blocks: ", max_selected_blocks)
@@ -47,14 +39,8 @@ def main(batch=8,
     K = torch.randn((batch, max_cache_seqlen, heads_kv, dim), dtype=dtype, device='cuda')
     V = torch.randn((batch, max_cache_seqlen, heads_kv, dim_v), dtype=dtype, device='cuda')
     
-    # Ensure at least one element equals cache_seqlen
-    if test_leftpad == 1:
-        cache_seqlens = torch.randint(1, max_cache_seqlen, (batch,), dtype=torch.int32, device='cuda')
-        random_index = torch.randint(0, batch, (1,), device='cuda').item()  # Select a random index
-        cache_seqlens[
-            random_index] = max_cache_seqlen  # Assign cache_seqlen to ensure at least one occurrence
-    else:
-        cache_seqlens = torch.full((batch,), max_cache_seqlen, dtype=torch.int32, device='cuda')
+
+    cache_seqlens = torch.full((batch,), max_cache_seqlen, dtype=torch.int32, device='cuda')
 
     print("cache_seqlens: ", cache_seqlens)
 
@@ -84,17 +70,17 @@ def main(batch=8,
 
     ## latency reference
     for _ in range(10):
-        ref = ref_program_fa(Q, K, V, cache_seqlens)
+        ref_program_fa(Q, K, V, cache_seqlens)
     torch.cuda.synchronize()
     start = time.time()
     for _ in range(100):
-        ref = ref_program_fa(Q, K, V, cache_seqlens)
+        ref_program_fa(Q, K, V, cache_seqlens)
     torch.cuda.synchronize()
     fa2_dense_time = (time.time() - start) / 100 * 1000
     print("fa2 dense time: ", fa2_dense_time)
 
     for _ in range(10):
-        out = block_sparse_flash_decode_leftpad_gqa_mask(
+        block_sparse_flash_decode_leftpad_gqa_mask(
             Q,
             K,
             V,
@@ -106,7 +92,7 @@ def main(batch=8,
     torch.cuda.synchronize()
     start = time.time()
     for _ in range(100):
-        out = block_sparse_flash_decode_leftpad_gqa_mask(
+        block_sparse_flash_decode_leftpad_gqa_mask(
             Q,
             K,
             V,
@@ -119,12 +105,12 @@ def main(batch=8,
     print("triton sparse time: ", triton_sparse_time)
 
     for _ in range(10):
-        out = model(Q, K, V, block_mask_tilelang, cache_seqlens)
+        model(Q, K, V, block_mask_tilelang, cache_seqlens)
 
     torch.cuda.synchronize()
     start = time.time()
     for _ in range(100):
-        out = model(Q, K, V, block_mask_tilelang, cache_seqlens)
+        model(Q, K, V, block_mask_tilelang, cache_seqlens)
     torch.cuda.synchronize()
     tilelang_sparse_time = (time.time() - start) / 100 * 1000
     print("tilelang sparse time: ", tilelang_sparse_time)
@@ -135,7 +121,7 @@ def main(batch=8,
     file_dir = "results_all"
     if not os.path.exists(file_dir):
         os.makedirs(file_dir)
-    file_name = f"{file_dir}/kernel_test_gqa{heads}_{heads_kv}_leftpad{test_leftpad}.txt"
+    file_name = f"{file_dir}/kernel_test_gqa{heads}_{heads_kv}.txt"
     # append the results to the file
     with open(file_name, "a") as f:
         f.write(
@@ -155,7 +141,6 @@ if __name__ == "__main__":
     parser.add_argument('--dim_v', type=int, default=128, help='dim_v')
     parser.add_argument('--sparse_ratio', type=float, default=0.9, help='sparse ratio')
     parser.add_argument('--block_size', type=int, default=16, help='block_size')
-    parser.add_argument('--test_leftpad', type=int, default=0, help='0 for no leftpad, 1 for leftpad')
     args = parser.parse_args()
     main(args.batch, args.heads, args.heads_kv, args.max_cache_seqlen, args.dim, args.dim_v,
-         args.sparse_ratio, args.block_size, args.test_leftpad)
+         args.sparse_ratio, args.block_size)
