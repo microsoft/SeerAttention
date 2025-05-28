@@ -16,7 +16,7 @@ for batch in "${batches[@]}"; do
           echo "batch_size: $batch, max_cache_seqlen: $max_cache_seqlen, block_size: $block_size, sparse_ratio:$sparse_ratio, heads: $heads, heads_kv: $heads_kv"
           
           for test_leftpad in "${test_leftpad_options[@]}"; do
-            python kernel_eval_tilelang.py \
+            python kernel_eval.py \
               --batch "$batch" \
               --heads "$heads" \
               --heads_kv "$heads_kv" \
