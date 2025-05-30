@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 import math
 import time
-from .utils import num_splits_heuristic
+from seer_attn.kernels.varlen.utils import num_splits_heuristic
 
 
 @triton.autotune(

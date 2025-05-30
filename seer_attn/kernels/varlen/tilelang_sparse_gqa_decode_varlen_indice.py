@@ -10,7 +10,7 @@ from einops import rearrange, einsum
 import argparse
 import time
 import math
-from .utils import num_splits_heuristic
+from seer_attn.kernels.varlen.utils import num_splits_heuristic
 
 
 def flashattn(batch, heads, heads_kv, dim, dim_v):
