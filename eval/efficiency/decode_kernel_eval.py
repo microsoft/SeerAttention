@@ -12,8 +12,8 @@ from seer_attn.kernels.varlen.tilelang_sparse_gqa_decode_varlen_indice import Sp
 def ref_program_fa(query, key, value, block_indices, cache_seqlens, max_cache_seqlen, num_blocks,
                    block_size):
     # latency reference
-    # from flash_attn_interface import flash_attn_with_kvcache # fa3
-    from flash_attn import flash_attn_with_kvcache  #fa2
+    from flash_attn_interface import flash_attn_with_kvcache # fa3
+    # from flash_attn import flash_attn_with_kvcache  #fa2
     query = query.unsqueeze(1)
     output = flash_attn_with_kvcache(query, key, value, cache_seqlens=cache_seqlens)
     output = output.squeeze(1)
