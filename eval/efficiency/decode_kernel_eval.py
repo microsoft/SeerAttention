@@ -12,8 +12,8 @@ from seer_attn.kernels.varlen.tilelang_sparse_gqa_decode_varlen_indice import Sp
 def ref_program_fa(query, key, value, block_indices, cache_seqlens, max_cache_seqlen, num_blocks,
                    block_size):
     # latency reference
-    # from flash_attn_interface import flash_attn_with_kvcache # fa3
-    from flash_attn import flash_attn_with_kvcache  #fa2
+    from flash_attn_interface import flash_attn_with_kvcache # fa3
+    # from flash_attn import flash_attn_with_kvcache  #fa2
     query = query.unsqueeze(1)
     output = flash_attn_with_kvcache(query, key, value, cache_seqlens=cache_seqlens)
     output = output.squeeze(1)
@@ -33,7 +33,7 @@ def main(batch=8,
     sparse_ratio = sparse_ratio
     block_size = block_size
 
-    sparse_kernel = SparseFlashAttn(batch, heads, heads_kv, dim, dim_v, block_size)
+    sparse_kernel = SparseFlashAttn(batch, heads, heads_kv, dim, dim_v, block_size, max_cache_seqlen)
 
     max_selected_blocks = int(math.ceil(max_cache_seqlen * (1 - sparse_ratio) / block_size))
     print("max_selected_blocks: ", max_selected_blocks)
@@ -87,8 +87,8 @@ def main(batch=8,
         ref = ref_program_fa(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen,
                              max_num_blocks, block_size)
     torch.cuda.synchronize()
-    fa2_dense_time = (time.time() - start) / 100 * 1000
-    print("fa2 dense time: ", fa2_dense_time)
+    fa3_dense_time = (time.time() - start) / 100 * 1000
+    print("fa3 dense time: ", fa3_dense_time)
 
     for _ in range(10):
         block_sparse_flash_decode_gqa_indice_triton(
@@ -133,19 +133,20 @@ def main(batch=8,
 
     # save results to file
     file_dir = "results"
+    # file_dir = "/mnt/output/results/efficiency/decode_kernel_eval"
     if not os.path.exists(file_dir):
         os.makedirs(file_dir)
     file_name = f"{file_dir}/kernel_test_{block_size}_gqa{heads}_{heads_kv}.csv"
 
     data_line = (
         f"{batch},{max_cache_seqlen},{sparse_ratio},"
-        f"{fa2_dense_time:.4f},{triton_sparse_time:.4f},{tilelang_sparse_time:.4f}\n"
+        f"{fa3_dense_time:.4f},{triton_sparse_time:.4f},{tilelang_sparse_time:.4f}\n"
     )
 
     with open(file_name, "a") as f:
         if os.path.getsize(file_name) == 0:
             f.write(
-                "batch,max_cache_seqlen,sparse_ratio,fa2_dense_time,triton_sparse_time,tilelang_sparse_time\n"
+                "batch,max_cache_seqlen,sparse_ratio,fa3_dense_time,triton_sparse_time,tilelang_sparse_time\n"
             )
         f.write(data_line)
 

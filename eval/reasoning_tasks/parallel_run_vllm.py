@@ -64,7 +64,7 @@ if __name__ == "__main__":
         # Keep track of completed runs to ensure total_run are processed
         completed_runs = 0 
 
-        output_config_subdir = os.path.join(output_dir, f"{task}_vllm_dense")
+        output_config_subdir = os.path.join(output_dir, f"{task}_vllm_{max_tokens}")
         os.makedirs(output_config_subdir, exist_ok=True)
 
         # Continue as long as there are runs to launch OR runs still active

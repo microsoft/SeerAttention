@@ -23,9 +23,9 @@ df["tilelang_speedup"] = df["fa2_dense_time"] / df["tilelang_sparse_time"]
 
 
 config_order = [
-    "256*8192", "128*16384", "64*32768", "32*65536", "16*131072",
-    "64*8192", "32*16384", "16*32768", "8*65536", "4*131072",
-    "16*8192", "8*16384", "4*32768", "2*65536", "1*131072",
+    "16*8192", "16*16384", "16*32768", "16*65536", "16*131072",
+    "8*8192", "8*16384", "8*32768", "8*65536", "8*131072",
+    "1*8192", "1*16384", "1*32768", "1*65536", "1*131072",
     
 ]
 
@@ -48,7 +48,7 @@ for idx, config in enumerate(config_order):
         
         ax.plot(sparse_ratios, triton_speedup, marker='o', label="Triton Sparse")
         ax.plot(sparse_ratios, tilelang_speedup, marker='s', label="TileLang Sparse")
-        ax.plot(sparse_ratios, np.ones_like(sparse_ratios), linestyle="--", color="gray", label="FA2 Baseline")
+        ax.plot(sparse_ratios, np.ones_like(sparse_ratios), linestyle="--", color="gray", label="FA3 Baseline")
         
         
         ax.set_title(f"batch={batch}, max_cache_seqlen={max_cache_seqlen}", fontsize=10)

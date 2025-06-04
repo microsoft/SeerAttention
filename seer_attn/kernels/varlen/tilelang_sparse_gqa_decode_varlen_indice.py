@@ -192,7 +192,7 @@ def flashattn(batch, heads, heads_kv, dim, dim_v):
 
 class SparseFlashAttn(torch.nn.Module):
 
-    def __init__(self, batch, heads, heads_kv, dim, dim_v, block_size):
+    def __init__(self, batch, heads, heads_kv, dim, dim_v, block_size, max_cache_seqlen):
         super(SparseFlashAttn, self).__init__()
         self.batch = batch
         self.heads = heads
@@ -209,7 +209,8 @@ class SparseFlashAttn(torch.nn.Module):
             num_split=T.symbolic("num_split"),
             num_stages=2,
             threads=128,
-            max_cache_seqlen=T.symbolic("max_cache_seqlen"),
+            # max_cache_seqlen=T.symbolic("max_cache_seqlen"),
+            max_cache_seqlen=max_cache_seqlen,
             max_selected_blocks=T.symbolic("max_selected_blocks"))
 
         self.kernel = tilelang.compile(
