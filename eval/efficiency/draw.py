@@ -12,14 +12,14 @@ args = parser.parse_args()
 
 df = pd.read_csv(args.data_path, delimiter=",", header=None, names=[
     "batch", "max_cache_seqlen", "sparse_ratio", 
-    "fa2_dense_time", "triton_sparse_time", "tilelang_sparse_time"
+    "fa3_dense_time", "triton_sparse_time", "tilelang_sparse_time"
 ])
-for col in ["batch", "max_cache_seqlen", "sparse_ratio", "fa2_dense_time", "triton_sparse_time", "tilelang_sparse_time"]:
+for col in ["batch", "max_cache_seqlen", "sparse_ratio", "fa3_dense_time", "triton_sparse_time", "tilelang_sparse_time"]:
     df[col] = pd.to_numeric(df[col], errors='coerce')
 
 
-df["triton_speedup"] = df["fa2_dense_time"] / df["triton_sparse_time"]
-df["tilelang_speedup"] = df["fa2_dense_time"] / df["tilelang_sparse_time"]
+df["triton_speedup"] = df["fa3_dense_time"] / df["triton_sparse_time"]
+df["tilelang_speedup"] = df["fa3_dense_time"] / df["tilelang_sparse_time"]
 
 
 config_order = [
