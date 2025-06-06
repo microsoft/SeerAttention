@@ -143,9 +143,6 @@ def infer(args):
                 item = json.loads(line.strip())
                 completions.append(item["completion"])
 
-        # completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
-        # with open(completion_filepath, 'r') as f:
-        #     completions = json.load(f)
         
         other_info_filepath = os.path.join(output_runnum_subdir, "other_info.json")
 
@@ -171,6 +168,9 @@ def infer(args):
             if len(quantile_sparsities) >= 32:
                 sparsity_32k = quantile_sparsities[31]
                 sparsity_32k_list.append(sparsity_32k)
+        elif "quest" in args.output_dir.lower():
+            overall_sparsity = other_info['overall_sparsity']
+
 
 
         print(f"Successfully loaded run{i}!")
@@ -208,7 +208,7 @@ def infer(args):
         Acc_list.append(Acc)
         generate_lens_list.extend(generate_lens)
         total_time_list.append(total_time)
-        if args.profile_sparsity:
+        if args.profile_sparsity or "quest" in args.output_dir.lower():
             overall_sparsity_list.append(overall_sparsity)
 
         summary_filepath = os.path.join(output_runnum_subdir, "summary.txt")
@@ -227,6 +227,8 @@ def infer(args):
                 if len(quantile_sparsities) >= 32:
                     f.write(f"Sparsity at 32k: {sparsity_32k}\n")
                 f.write(f"Quantile sparsities: {quantile_sparsities}\n")
+            elif "quest" in args.output_dir.lower():
+                f.write(f"Overall sparsity: {overall_sparsity}\n")
             f.write("\n")
 
 
@@ -249,8 +251,7 @@ def infer(args):
     # sparsity
     if args.profile_sparsity:
         overall_sparsity = sum(overall_sparsity_list) / len(overall_sparsity_list)
-        if args.profile_sparsity:
-            print("Overall_sparsity: ", overall_sparsity)
+        print("Overall_sparsity: ", overall_sparsity)
 
         if len(sparsity_16k_list) > 0:
             average_sparsity_16k = sum(sparsity_16k_list) / len(sparsity_16k_list)
@@ -258,6 +259,9 @@ def infer(args):
         if len(sparsity_32k_list) > 0:
             average_sparsity_32k = sum(sparsity_32k_list) / len(sparsity_32k_list)
             print(f"Average sparsity at 32k: {average_sparsity_32k}")
+    elif "quest" in args.output_dir.lower():
+        overall_sparsity = sum(overall_sparsity_list) / len(overall_sparsity_list)
+        print("Overall sparsity: ", overall_sparsity)
 
     overall_summary_filepath = os.path.join(args.output_dir, "overall_summary.txt")
     with open(overall_summary_filepath, "w") as f:
@@ -274,6 +278,8 @@ def infer(args):
                 f.write(f"Average sparsity at 16k: {average_sparsity_16k}\n")
             if len(sparsity_32k_list) > 0:
                 f.write(f"Average sparsity at 32k: {average_sparsity_32k}\n")
+        elif "quest" in args.output_dir.lower():
+            f.write(f"Overall sparsity: {overall_sparsity}\n")
         f.write("\n")
 
 

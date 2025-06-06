@@ -16,3 +16,4 @@ Pebble
 timeout-decorator
 latex2sympy2
 psutil
+regex

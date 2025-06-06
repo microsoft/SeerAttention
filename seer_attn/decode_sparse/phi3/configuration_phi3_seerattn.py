@@ -229,7 +229,7 @@ class SeerAttnPhi3Config(PretrainedConfig):
         assert self.seerattn_implementation in ['seer_sparse', 'seer_dense', 'oracle_sparse']
         assert self.seerattn_sparsity_method in ['threshold', 'nz_ratio']
         assert self.seerattn_gate_hidden_size in [64, 128, 256]
-        assert self.seerattn_gate_block_size in [16, 32, 64]
+        assert self.seerattn_gate_block_size in [16, 32, 64, 128]
 
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling

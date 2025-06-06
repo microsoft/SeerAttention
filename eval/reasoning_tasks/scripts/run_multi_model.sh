@@ -4,18 +4,18 @@ models_dir=${MODELS_DIR:-"./models"}
 # Define the subfolder that will store all eval results.
 results_dir="${models_dir}/results"
 echo "results_dir: ${results_dir}"
-threshold=${THRESHOLD:-"5e-3"}
+threshold=${THRESHOLD:-"0.0"}
+token_budget=${TOKEN_BUDGET:-"4096"}
+max_tokens=${MAX_TOKENS:-"32768"}  # Default max tokens for generation
+sparsity_method=${SPARSITY_METHOD:-"threshold"}
+num_gpus=${NUM_GPUS:-"8"}
+start_layer=${START_LAYER:-"0"}
 
 # Example tasks to evaluate on (modify as necessary)
 # TASKS="aime,math,gpqa,olympiadbench"
-tasks=${TASKS:-"aime"}
+tasks=${TASKS:-"aime24"}
 # Any extra arguments you need to pass to the evaluation script, e.g., the attention method.
-attention_implementation="seer_sparse"
-sparsity_method="threshold"
-model_size="14B"
-max_tokens=32768
-num_gpus=8
-limit=-1
+attention="seer_sparse"
 
 # Create the results folder if it doesn't exist
 mkdir -p "$results_dir"
@@ -41,19 +41,18 @@ for model in "$models_dir"/*/ ; do
         echo "Results will be saved to: ${output_dir}"
         
         # Run the evaluation script for the model.
-        python parallel_run_hf.py \
+        python parallel_run.py \
             --model_dir "$model_dir" \
-            --model_size "$model_size" \
             --tasks "$tasks" \
             --output_dir "$output_dir" \
-            --attention_implementation "$attention_implementation" \
-            --sparsity_method "$sparsity_method" \
+            --max_tokens "$max_tokens" \
+            --attention "$attention" \
             --profile_sparsity \
             --threshold "$threshold" \
+            --token_budget "$token_budget" \
+            --sparsity_method "$sparsity_method" \
             --num_gpus "$num_gpus" \
-            --limit "$limit" \
-            --max_tokens "$max_tokens" \
-
+            --start_layer "$start_layer" \
         
         echo "Completed evaluation for model: ${model_basename}"
     fi
