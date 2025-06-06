@@ -243,6 +243,7 @@ class Qwen3Attention(nn.Module):
         self.sliding_window = config.sliding_window
         self.chunk_size = config.chunk_size
         self.token_budget = config.token_budget
+        self.start_layer = config.start_layer
         if not (
             self.config.use_sliding_window
             and getattr(self.config, "sliding_window", None) is not None
@@ -316,7 +317,8 @@ class Qwen3Attention(nn.Module):
         hidden_shape = (*input_shape, -1, self.head_dim)
         bsz, q_len, _ = hidden_states.size()
 
-        if q_len > 1:
+        if q_len > 1 or self.layer_idx < self.start_layer:
+            print(f"Using flash attention for layer {self.layer_idx} with q_len {q_len}")
             return self.flash_forward(
                 hidden_states,
                 position_embeddings,

@@ -173,6 +173,7 @@ class QuestQwen3Config(PretrainedConfig):
         attention_dropout=0.0,
         chunk_size=64,
         token_budget=2048,
+        start_layer=0,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -186,6 +187,7 @@ class QuestQwen3Config(PretrainedConfig):
         self.max_window_layers = max_window_layers
         self.chunk_size = chunk_size
         self.token_budget = token_budget
+        self.start_layer = start_layer
 
         # for backward compatibility
         if num_key_value_heads is None:

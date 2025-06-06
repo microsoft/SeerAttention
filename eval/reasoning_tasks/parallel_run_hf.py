@@ -63,6 +63,7 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", default="0", type=str)
     parser.add_argument("--token_budget", default="2048", type=str)
     parser.add_argument("--max_tokens", default="32768", type=str)
+    parser.add_argument("--start_layer", type=int, default=0, help="Start sparse layer, '0' means all layers")
     parser.add_argument("--profile_sparsity", action="store_true",
                         help="Flag to profile sparsity in eval.py")
     args = parser.parse_args()
@@ -182,6 +183,7 @@ if __name__ == "__main__":
                             "--block_size", str(block_size),
                             "--run_id", str(current_run_id),
                             "--max_tokens", str(max_tokens),
+                            "--start_layer", str(args.start_layer),
                         ] + cli_params
 
                         if args.profile_sparsity:

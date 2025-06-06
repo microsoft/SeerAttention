@@ -14,6 +14,7 @@ block_size="64"
 sparsity_method="token_budget"
 token_budget="4096"
 sliding_window_size="0"
+start_layer="0"
 
 
 python parallel_run_hf.py \
@@ -29,3 +30,4 @@ python parallel_run_hf.py \
       --limit "$limit" \
       --num_gpus "$num_gpus" \
       --max_tokens "$max_tokens" \
+      --start_layer "$start_layer" \

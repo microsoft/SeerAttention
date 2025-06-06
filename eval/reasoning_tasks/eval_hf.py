@@ -90,6 +90,7 @@ def parse_args():
     parser.add_argument("--sliding_window_size", default=0, type=int)
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--token_budget", default=2048, type=int)
+    parser.add_argument("--start_layer", default=0, type=int)
     parser.add_argument("--block_size", default=64, type=int)
     parser.add_argument("--rank", default=0, type=int)
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa", "quest"], type=str)
@@ -266,11 +267,11 @@ def infer(args):
     elif args.attention_implementation == "quest":
         if "qwen3" in model_name_or_path.lower():
             model = QuestQwen3ForCausalLM.from_pretrained(
-                model_name_or_path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=device, chunk_size=args.block_size, token_budget=args.token_budget
+                model_name_or_path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=device, chunk_size=args.block_size, token_budget=args.token_budget, start_layer=args.start_layer
             )
         elif "qwen" in model_name_or_path.lower():
             model = QuestQwen2ForCausalLM.from_pretrained(
-                model_name_or_path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=device, chunk_size=args.block_size, token_budget=args.token_budget
+                model_name_or_path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=device, chunk_size=args.block_size, token_budget=args.token_budget, start_layer=args.start_layer
             )
         else:
             raise ValueError(f"model: {model_name_or_path} not supported in Quest")

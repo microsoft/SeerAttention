@@ -197,6 +197,7 @@ class Qwen2Attention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.chunk_size = config.chunk_size
         self.token_budget = config.token_budget
+        self.start_layer = config.start_layer
 
     def flash_forward(
         self,
@@ -271,7 +272,7 @@ class Qwen2Attention(nn.Module):
         hidden_shape = (*input_shape, -1, self.head_dim)
         bsz, q_len, _ = hidden_states.size()
 
-        if q_len > 1:
+        if q_len > 1 or self.layer_idx < self.start_layer:
             return self.flash_forward(
                 hidden_states,
                 position_embeddings,
