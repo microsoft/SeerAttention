@@ -31,7 +31,7 @@ config_order = [
 ]
 
 
-fig, axes = plt.subplots(3, 5, figsize=(25, 15))
+fig, axes = plt.subplots(5, 5, figsize=(25, 20))
 axes = axes.flatten()  
 
 

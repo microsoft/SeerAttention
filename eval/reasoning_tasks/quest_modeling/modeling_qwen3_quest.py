@@ -318,7 +318,6 @@ class Qwen3Attention(nn.Module):
         bsz, q_len, _ = hidden_states.size()
 
         if q_len > 1 or self.layer_idx < self.start_layer:
-            print(f"Using flash attention for layer {self.layer_idx} with q_len {q_len}")
             return self.flash_forward(
                 hidden_states,
                 position_embeddings,
