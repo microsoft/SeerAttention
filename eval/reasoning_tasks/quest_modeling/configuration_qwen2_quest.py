@@ -22,12 +22,12 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 
-class SeerAttnQwen3Config(PretrainedConfig):
+class QuestQwen2Config(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a [`Qwen3Model`]. It is used to instantiate a
-    Qwen3 model according to the specified arguments, defining the model architecture. Instantiating a configuration
+    This is the configuration class to store the configuration of a [`Qwen2Model`]. It is used to instantiate a
+    Qwen2 model according to the specified arguments, defining the model architecture. Instantiating a configuration
     with the defaults will yield a similar configuration to that of
-    Qwen3-8B [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B).
+    Qwen2-7B-beta [Qwen/Qwen2-7B-beta](https://huggingface.co/Qwen/Qwen2-7B-beta).
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
@@ -35,8 +35,8 @@ class SeerAttnQwen3Config(PretrainedConfig):
 
     Args:
         vocab_size (`int`, *optional*, defaults to 151936):
-            Vocabulary size of the Qwen3 model. Defines the number of different tokens that can be represented by the
-            `inputs_ids` passed when calling [`Qwen3Model`]
+            Vocabulary size of the Qwen2 model. Defines the number of different tokens that can be represented by the
+            `inputs_ids` passed when calling [`Qwen2Model`]
         hidden_size (`int`, *optional*, defaults to 4096):
             Dimension of the hidden representations.
         intermediate_size (`int`, *optional*, defaults to 22016):
@@ -52,8 +52,6 @@ class SeerAttnQwen3Config(PretrainedConfig):
             converting a multi-head checkpoint to a GQA checkpoint, each group key and value head should be constructed
             by meanpooling all the original heads within that group. For more details checkout [this
             paper](https://arxiv.org/pdf/2305.13245.pdf). If it is not specified, will default to `32`.
-        head_dim (`int`, *optional*, defaults to 128):
-            The attention head dimension.
         hidden_act (`str` or `function`, *optional*, defaults to `"silu"`):
             The non-linear activation function (function or string) in the decoder.
         max_position_embeddings (`int`, *optional*, defaults to 32768):
@@ -106,8 +104,6 @@ class SeerAttnQwen3Config(PretrainedConfig):
                     Only used with 'llama3'. Scaling factor applied to low frequency components of the RoPE
                 `high_freq_factor` (`float`, *optional*):
                     Only used with 'llama3'. Scaling factor applied to high frequency components of the RoPE
-        attention_bias (`bool`, defaults to `False`, *optional*, defaults to `False`):
-            Whether to use a bias in the query, key, value and output projection layers during self-attention.
         use_sliding_window (`bool`, *optional*, defaults to `False`):
             Whether to use sliding window attention.
         sliding_window (`int`, *optional*, defaults to 4096):
@@ -118,22 +114,22 @@ class SeerAttnQwen3Config(PretrainedConfig):
             The dropout ratio for the attention probabilities.
 
     ```python
-    >>> from transformers import Qwen3Model, Qwen3Config
+    >>> from transformers import Qwen2Model, Qwen2Config
 
-    >>> # Initializing a Qwen3 style configuration
-    >>> configuration = Qwen3Config()
+    >>> # Initializing a Qwen2 style configuration
+    >>> configuration = Qwen2Config()
 
-    >>> # Initializing a model from the Qwen3-8B style configuration
-    >>> model = Qwen3Model(configuration)
+    >>> # Initializing a model from the Qwen2-7B style configuration
+    >>> model = Qwen2Model(configuration)
 
     >>> # Accessing the model configuration
     >>> configuration = model.config
     ```"""
 
-    model_type = "qwen3"
+    model_type = "qwen2"
     keys_to_ignore_at_inference = ["past_key_values"]
 
-    # Default tensor parallel plan for base model `Qwen3`
+    # Default tensor parallel plan for base model `Qwen2`
     base_model_tp_plan = {
         "layers.*.self_attn.q_proj": "colwise",
         "layers.*.self_attn.k_proj": "colwise",
@@ -157,37 +153,20 @@ class SeerAttnQwen3Config(PretrainedConfig):
         num_hidden_layers=32,
         num_attention_heads=32,
         num_key_value_heads=32,
-        head_dim=128,
         hidden_act="silu",
         max_position_embeddings=32768,
         initializer_range=0.02,
         rms_norm_eps=1e-6,
-        fused_norm=False,
-        use_flash_rope=False,
         use_cache=True,
         tie_word_embeddings=False,
         rope_theta=10000.0,
         rope_scaling=None,
-        attention_bias=False,
         use_sliding_window=False,
         sliding_window=4096,
         max_window_layers=28,
         attention_dropout=0.0,
-        seerattn_sparsity_method='threshold', ## or token_budget
-        seerattn_sliding_window_size=0, ## 0 means no sliding window
-        seerattn_token_budget=2048,
-        seerattn_threshold=0.0,
-        seerattn_nz_ratio=1.0,
-        seerattn_k_seq_pooling_type='Kmaxminavg',
-        seerattn_q_head_pooling_type='Qproj', ## or Qavgproj
-        seerattn_training_threshold=0.0,
-        seerattn_gate_block_size=64, 
-        seerattn_gate_hidden_size=128,
-        seerattn_last_block_dense=True,
-        seerattn_prefill=False,
-        seerattn_decode=True,
-        seerattn_implementation="seer_sparse", # [seer_sparse, seer_dense, oracle_sparse]
-        seerattn_output_sparsity=False,
+        chunk_size=64,
+        token_budget=2048,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -199,52 +178,21 @@ class SeerAttnQwen3Config(PretrainedConfig):
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window  # we check `use_sliding_window` in the modeling code
         self.max_window_layers = max_window_layers
+        self.chunk_size = chunk_size
+        self.token_budget = token_budget
 
         # for backward compatibility
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
 
         self.num_key_value_heads = num_key_value_heads
-        self.head_dim = head_dim
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
-        self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
-        self.fused_norm = fused_norm
-        self.use_flash_rope = use_flash_rope
-        
-        
-        self.seerattn_sparsity_method = seerattn_sparsity_method
-        self.seerattn_sliding_window_size = seerattn_sliding_window_size
-        self.seerattn_token_budget = seerattn_token_budget
-        self.seerattn_threshold = seerattn_threshold
-        self.seerattn_nz_ratio = seerattn_nz_ratio
-        self.seerattn_k_seq_pooling_type = seerattn_k_seq_pooling_type  # Kmaxminavg
-
-        self.seerattn_q_head_pooling_type = seerattn_q_head_pooling_type
-        
-        
-        
-        self.seerattn_training_threshold = seerattn_training_threshold
-        self.seerattn_gate_hidden_size = seerattn_gate_hidden_size    
-        self.seerattn_gate_block_size = seerattn_gate_block_size      
-        
-        self.seerattn_last_block_dense = seerattn_last_block_dense
-        self.seerattn_prefill = seerattn_prefill
-        self.seerattn_decode = seerattn_decode
-        self.seerattn_implementation = seerattn_implementation
-        self.seerattn_output_sparsity = seerattn_output_sparsity
-        assert self.seerattn_q_head_pooling_type in ['Qproj', 'Qavgproj', 'Qavg']
-        assert self.seerattn_implementation in ['seer_sparse', 'seer_dense', 'oracle_sparse']
-        assert self.seerattn_sparsity_method in ['threshold', 'nz_ratio']
-        assert self.seerattn_gate_hidden_size in [64, 128, 256]
-        assert self.seerattn_gate_block_size in [16, 32, 64, 128]
-
-
         # Validate the correctness of rotary position embeddings parameters
         # BC: if there is a 'type' field, move it to 'rope_type'.
         if self.rope_scaling is not None and "type" in self.rope_scaling:
@@ -257,4 +205,4 @@ class SeerAttnQwen3Config(PretrainedConfig):
         )
 
 
-__all__ = ["Qwen3Config"]
+__all__ = ["Qwen2Config"]

@@ -7,7 +7,7 @@ max_tokens=32768
 num_gpus=8
 limit=-1
 
-# tasks="aime,math,gpqa,olympiadbench"
+# tasks="aime24,aime25,math,gpqa,livecodebench"
 tasks="math"
 
 

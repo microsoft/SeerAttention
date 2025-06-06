@@ -22,7 +22,7 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 
-class SeerAttnQwen3Config(PretrainedConfig):
+class QuestQwen3Config(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`Qwen3Model`]. It is used to instantiate a
     Qwen3 model according to the specified arguments, defining the model architecture. Instantiating a configuration
@@ -162,8 +162,6 @@ class SeerAttnQwen3Config(PretrainedConfig):
         max_position_embeddings=32768,
         initializer_range=0.02,
         rms_norm_eps=1e-6,
-        fused_norm=False,
-        use_flash_rope=False,
         use_cache=True,
         tie_word_embeddings=False,
         rope_theta=10000.0,
@@ -173,21 +171,8 @@ class SeerAttnQwen3Config(PretrainedConfig):
         sliding_window=4096,
         max_window_layers=28,
         attention_dropout=0.0,
-        seerattn_sparsity_method='threshold', ## or token_budget
-        seerattn_sliding_window_size=0, ## 0 means no sliding window
-        seerattn_token_budget=2048,
-        seerattn_threshold=0.0,
-        seerattn_nz_ratio=1.0,
-        seerattn_k_seq_pooling_type='Kmaxminavg',
-        seerattn_q_head_pooling_type='Qproj', ## or Qavgproj
-        seerattn_training_threshold=0.0,
-        seerattn_gate_block_size=64, 
-        seerattn_gate_hidden_size=128,
-        seerattn_last_block_dense=True,
-        seerattn_prefill=False,
-        seerattn_decode=True,
-        seerattn_implementation="seer_sparse", # [seer_sparse, seer_dense, oracle_sparse]
-        seerattn_output_sparsity=False,
+        chunk_size=64,
+        token_budget=2048,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -199,6 +184,8 @@ class SeerAttnQwen3Config(PretrainedConfig):
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window  # we check `use_sliding_window` in the modeling code
         self.max_window_layers = max_window_layers
+        self.chunk_size = chunk_size
+        self.token_budget = token_budget
 
         # for backward compatibility
         if num_key_value_heads is None:
@@ -214,37 +201,6 @@ class SeerAttnQwen3Config(PretrainedConfig):
         self.rope_scaling = rope_scaling
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
-        self.fused_norm = fused_norm
-        self.use_flash_rope = use_flash_rope
-        
-        
-        self.seerattn_sparsity_method = seerattn_sparsity_method
-        self.seerattn_sliding_window_size = seerattn_sliding_window_size
-        self.seerattn_token_budget = seerattn_token_budget
-        self.seerattn_threshold = seerattn_threshold
-        self.seerattn_nz_ratio = seerattn_nz_ratio
-        self.seerattn_k_seq_pooling_type = seerattn_k_seq_pooling_type  # Kmaxminavg
-
-        self.seerattn_q_head_pooling_type = seerattn_q_head_pooling_type
-        
-        
-        
-        self.seerattn_training_threshold = seerattn_training_threshold
-        self.seerattn_gate_hidden_size = seerattn_gate_hidden_size    
-        self.seerattn_gate_block_size = seerattn_gate_block_size      
-        
-        self.seerattn_last_block_dense = seerattn_last_block_dense
-        self.seerattn_prefill = seerattn_prefill
-        self.seerattn_decode = seerattn_decode
-        self.seerattn_implementation = seerattn_implementation
-        self.seerattn_output_sparsity = seerattn_output_sparsity
-        assert self.seerattn_q_head_pooling_type in ['Qproj', 'Qavgproj', 'Qavg']
-        assert self.seerattn_implementation in ['seer_sparse', 'seer_dense', 'oracle_sparse']
-        assert self.seerattn_sparsity_method in ['threshold', 'nz_ratio']
-        assert self.seerattn_gate_hidden_size in [64, 128, 256]
-        assert self.seerattn_gate_block_size in [16, 32, 64, 128]
-
-
         # Validate the correctness of rotary position embeddings parameters
         # BC: if there is a 'type' field, move it to 'rope_type'.
         if self.rope_scaling is not None and "type" in self.rope_scaling:

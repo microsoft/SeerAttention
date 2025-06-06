@@ -49,7 +49,7 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.utils.deprecation import deprecate_kwarg
-from seer_attn.qwen.configuration_qwen2_seerattn import SeerAttnQwen2Config
+from seer_attn.prefill_sparse.qwen.configuration_qwen2_seerattn import SeerAttnQwen2Config
 from seer_attn.utils import BaseModelOutputWithPastAndSeer, CausalLMOutputWithPastAndSeer
 from seer_attn.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
 from seer_attn.modules.common import (

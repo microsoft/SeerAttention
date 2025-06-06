@@ -1,13 +1,20 @@
 model_dir="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-output_dir="./result_dense"
+output_dir="./result_quest"
 model_size="14B"
-attention_implementation="fa2"
+attention_implementation="quest"
 max_tokens=32768
-num_gpus=8
 limit=-1
+num_gpus=8
 
 # tasks="aime24,aime25,math,gpqa,livecodebench"
 tasks="math"
+
+
+block_size="64"
+sparsity_method="token_budget"
+token_budget="4096"
+sliding_window_size="0"
+
 
 python parallel_run_hf.py \
       --model_dir "$model_dir" \
@@ -15,8 +22,10 @@ python parallel_run_hf.py \
       --tasks "$tasks" \
       --output_dir "$output_dir" \
       --attention_implementation "$attention_implementation" \
-      --sparsity_method "threshold" \
-      --threshold "0" \
-      --num_gpus "$num_gpus" \
+      --block_size "$block_size" \
+      --sparsity_method "$sparsity_method" \
+      --token_budget "$token_budget" \
+      --sliding_window_size "$sliding_window_size" \
       --limit "$limit" \
+      --num_gpus "$num_gpus" \
       --max_tokens "$max_tokens" \

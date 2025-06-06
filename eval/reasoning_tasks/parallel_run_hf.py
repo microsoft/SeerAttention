@@ -193,7 +193,7 @@ if __name__ == "__main__":
                     if (run_counter < total_run and not available_gpus) or (run_counter >= total_run and active_procs):
                         time.sleep(5)
 
-                if task != "livecodebench":
+                if task != "livecodebench": # remove this line at last
                     get_results_cmd = [
                         "python", "summary_results.py",
                         "--model_name_or_path", model_dir,
