@@ -66,14 +66,17 @@ class SeerAttnQwen2Config(PretrainedConfig):
         max_window_layers=28,
         attention_dropout=0.0,
         seerattn_sparsity_method='threshold', #[threshold or token_budget]
-        seerattn_token_budget=2048,
+        seerattn_token_budget=4096,
         seerattn_threshold=0.0,
+        seerattn_use_rope=True,
+        seerattn_use_qk_norm=False,
         seerattn_k_seq_pooling_type='Kmaxminavg',
         seerattn_q_head_pooling_type='Qproj', # [Qproj, Qavgproj, Qavg]
         seerattn_loss_slice_ratio=0.0,
         seerattn_gate_block_size=64, # gate block size for seerattn, [32, 64, 128]
         seerattn_gate_hidden_size=128, # gate hidden size for seerattn
         seerattn_implementation="seer_sparse", # [seer_sparse, seer_dense, oracle_sparse]
+        seerattn_start_layer=0,  # the first layer to use seerattn, inclusive
         seerattn_output_sparsity=False,
         **kwargs,
     ):
@@ -106,15 +109,15 @@ class SeerAttnQwen2Config(PretrainedConfig):
         self.seerattn_token_budget = seerattn_token_budget
         self.seerattn_threshold = seerattn_threshold
         self.seerattn_k_seq_pooling_type = seerattn_k_seq_pooling_type  # Kmaxminavg
-
         self.seerattn_q_head_pooling_type = seerattn_q_head_pooling_type
-        
         self.seerattn_loss_slice_ratio = seerattn_loss_slice_ratio
-        
         self.seerattn_gate_hidden_size = seerattn_gate_hidden_size    
         self.seerattn_gate_block_size = seerattn_gate_block_size      
         
         self.seerattn_implementation = seerattn_implementation
+        self.seerattn_start_layer = seerattn_start_layer
+        self.seerattn_use_rope = seerattn_use_rope
+        self.seerattn_use_qk_norm = seerattn_use_qk_norm
         self.seerattn_output_sparsity = seerattn_output_sparsity
         assert self.seerattn_q_head_pooling_type in ['Qproj', 'Qavgproj', 'Qavg']
         assert self.seerattn_implementation in ['seer_sparse', 'seer_dense', 'oracle_sparse']

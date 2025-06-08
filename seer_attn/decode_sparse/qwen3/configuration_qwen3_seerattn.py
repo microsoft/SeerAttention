@@ -68,19 +68,17 @@ class SeerAttnQwen3Config(PretrainedConfig):
         max_window_layers=28,
         attention_dropout=0.0,
         seerattn_sparsity_method='threshold', ## or token_budget
-        seerattn_sliding_window_size=0, ## 0 means no sliding window
-        seerattn_token_budget=2048,
+        seerattn_token_budget=4096,
         seerattn_threshold=0.0,
-        seerattn_nz_ratio=1.0,
+        seerattn_use_rope=True,
+        seerattn_use_qk_norm=False,
         seerattn_k_seq_pooling_type='Kmaxminavg',
         seerattn_q_head_pooling_type='Qproj', ## or Qavgproj
         seerattn_training_threshold=0.0,
         seerattn_gate_block_size=64, 
         seerattn_gate_hidden_size=128,
-        seerattn_last_block_dense=True,
-        seerattn_prefill=False,
-        seerattn_decode=True,
         seerattn_implementation="seer_sparse", # [seer_sparse, seer_dense, oracle_sparse]
+        seerattn_start_layer=0,  # the first layer to use seerattn, inclusive
         seerattn_output_sparsity=False,
         **kwargs,
     ):
@@ -113,23 +111,16 @@ class SeerAttnQwen3Config(PretrainedConfig):
         
         
         self.seerattn_sparsity_method = seerattn_sparsity_method
-        self.seerattn_sliding_window_size = seerattn_sliding_window_size
         self.seerattn_token_budget = seerattn_token_budget
         self.seerattn_threshold = seerattn_threshold
-        self.seerattn_nz_ratio = seerattn_nz_ratio
         self.seerattn_k_seq_pooling_type = seerattn_k_seq_pooling_type  # Kmaxminavg
-
         self.seerattn_q_head_pooling_type = seerattn_q_head_pooling_type
-        
-        
-        
         self.seerattn_training_threshold = seerattn_training_threshold
         self.seerattn_gate_hidden_size = seerattn_gate_hidden_size    
         self.seerattn_gate_block_size = seerattn_gate_block_size      
-        
-        self.seerattn_last_block_dense = seerattn_last_block_dense
-        self.seerattn_prefill = seerattn_prefill
-        self.seerattn_decode = seerattn_decode
+        self.seerattn_start_layer = seerattn_start_layer
+        self.seerattn_use_rope = seerattn_use_rope
+        self.seerattn_use_qk_norm = seerattn_use_qk_norm
         self.seerattn_implementation = seerattn_implementation
         self.seerattn_output_sparsity = seerattn_output_sparsity
         assert self.seerattn_q_head_pooling_type in ['Qproj', 'Qavgproj', 'Qavg']
