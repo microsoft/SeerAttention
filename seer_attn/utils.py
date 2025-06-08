@@ -17,16 +17,6 @@ class BaseModelOutputWithPastAndCache(ModelOutput):
     k_compressed_cache: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
 
 
-@dataclass
-class CausalLMOutputWithPastAndCache(ModelOutput):
-    loss: Optional[torch.FloatTensor] = None
-    logits: torch.FloatTensor = None
-    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
-    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
-    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
-    sparsitys_info: Optional[Tuple[Tuple[int, int], ...]] = None
-    k_compressed_cache: Optional[Tuple[torch.FloatTensor, ...]] = None
-
 
 
 @dataclass
@@ -71,3 +61,35 @@ class CausalLMOutputWithPastAndMask(ModelOutput):
     attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
     pooling_gt: Optional[Tuple[torch.FloatTensor, ...]] = None
     predict_mask: Optional[Tuple[torch.FloatTensor, ...]] = None
+
+@dataclass
+class CausalLMOutputWithPastAndCache(ModelOutput):
+    loss: Optional[torch.FloatTensor] = None
+    logits: torch.FloatTensor = None
+    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    sparsitys_info: Optional[Tuple[Tuple[int, int], ...]] = None
+    k_compressed_cache: Optional[Tuple[torch.FloatTensor, ...]] = None
+
+
+
+
+@dataclass
+class CausalLMOutputWithPastAndGateloss(ModelOutput):
+    loss: Optional[torch.FloatTensor] = None
+    logits: torch.FloatTensor = None
+    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    gate_loss: Optional[torch.FloatTensor] = None
+
+
+
+@dataclass
+class BaseModelOutputWithPastAndGateloss(ModelOutput):
+    last_hidden_state: torch.FloatTensor = None
+    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    gate_loss: Optional[torch.FloatTensor] = None

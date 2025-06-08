@@ -4,8 +4,8 @@ import torch.nn.functional as F
 from torch.nn import init
 from itertools import combinations
 from flash_attn.bert_padding import index_put_first_axis 
-from seer_attn.kernels.pooling_varlen import maxpool_varlen, avgpool_varlen
-from seer_attn.modules.common import apply_rotary_pos_emb_single, RMSNorm
+from ..kernels.varlen.pooling_varlen import maxpool_varlen, avgpool_varlen
+from ..modules.common import apply_rotary_pos_emb_single, RMSNorm
 
 import os
 import math

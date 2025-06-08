@@ -234,13 +234,10 @@ def train():
     config.seerattn_gate_block_size = model_args.seerattn_gate_block_size
 
     config.seerattn_q_head_pooling_type = model_args.seerattn_q_head_pooling_type
-    config.seerattn_training_threshold = model_args.seerattn_training_threshold
     config.seerattn_gate_hidden_size = model_args.seerattn_gate_hidden_size
-    config.seerattn_ignore_last_block = model_args.seerattn_ignore_last_block
     config.seerattn_loss_slice_ratio = model_args.seerattn_loss_slice_ratio
     config.seerattn_use_qk_norm = model_args.seerattn_use_qk_norm
     config.seerattn_use_rope = model_args.seerattn_use_rope
-    config.seerattn_block_slice_mode = model_args.seerattn_block_slice_mode
     config.base_model = model_args.base_model
 
 

@@ -96,9 +96,7 @@ class SeerAttnQwen3Attention(nn.Module):
 
         self.loss_fct = torch.nn.KLDivLoss()
         self.headpooling_type = config.seerattn_q_head_pooling_type
-        self.threshold = config.seerattn_training_threshold
         self.loss_slice_ratio = config.seerattn_loss_slice_ratio
-        self.block_slice_mode = config.seerattn_block_slice_mode
         self.block_size = config.seerattn_gate_block_size
 
     def forward(
@@ -506,6 +504,7 @@ class SeerAttnQwen3ForCausalLM(SeerAttnQwen3PreTrainedModel, GenerationMixin):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,

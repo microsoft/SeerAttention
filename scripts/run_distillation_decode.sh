@@ -19,6 +19,7 @@ bs=${BS:-16}
 loss_slice_ratio=${LOSS_SLICE_RATIO:-0.5}
 dataset_name=${DATASET_NAME:-"open-r1/OpenR1-Math-220k"}
 base_model=${BASE_MODEL:-"deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"}
+base_name=$(basename "$base_model")
 prefix=${PREFIX:-"openr1"}
 ds_config=${DS_CONFIG:-"ds_config/stage2.json"}
 gradient_accumulation_steps=$((bs/gpus))
@@ -28,11 +29,12 @@ export WANDB_MODE=offline
 run_name="${prefix}_${headpooling_type}_${gate_type}_bs${bs}_gdim${gate_hidden_size}_block${blocksize}_wd${weight_decay}_lr${lr}_slice${loss_slice_ratio}_qknorm${use_qk_norm}"
 echo "Running with headpooling type: ${headpooling_type}"
 echo "Run name: ${run_name}"
+
 torchrun --nproc_per_node=$gpus --master_port=10003 distillation_decode.py  \
     --base_model $base_model \
     --seerattn_k_seq_pooling_type $gate_type \
     --bf16 True \
-    --output_dir ${output_dir}/$run_name \
+    --output_dir ${output_dir}/$base_name/$run_name \
     --dataset_name $dataset_name \
     --training_max_length $training_max_length \
     --num_train_epochs 1     \
@@ -49,7 +51,6 @@ torchrun --nproc_per_node=$gpus --master_port=10003 distillation_decode.py  \
     --logging_steps 1     \
     --deepspeed $ds_config \
     --seerattn_q_head_pooling_type $headpooling_type \
-    --seerattn_training_threshold $threshold \
     --seerattn_gate_hidden_size $gate_hidden_size \
     --seerattn_gate_block_size $blocksize \
     --seerattn_loss_slice_ratio $loss_slice_ratio \

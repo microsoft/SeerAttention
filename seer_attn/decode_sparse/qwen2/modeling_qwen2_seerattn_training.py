@@ -93,9 +93,7 @@ class SeerAttnQwen2Attention(nn.Module):
         self.rotary_emb = Qwen2RotaryEmbedding(config=self.config)
         self.loss_fct = torch.nn.KLDivLoss()
         self.headpooling_type = config.seerattn_q_head_pooling_type
-        self.threshold = config.seerattn_training_threshold
         self.loss_slice_ratio = config.seerattn_loss_slice_ratio
-        self.block_slice_mode = config.seerattn_block_slice_mode
         self.block_size = self.config.seerattn_gate_block_size
 
 
@@ -392,6 +390,12 @@ class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
+
+        if position_ids is None:
+            position_ids = torch.arange(
+                0, inputs_embeds.shape[0], device=inputs_embeds.device # change to 0 for now!!!!!
+            ).unsqueeze(0)
+
         hidden_states = inputs_embeds
 
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -509,6 +513,7 @@ class SeerAttnQwen2ForCausalLM(SeerAttnQwen2PreTrainedModel, GenerationMixin):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,

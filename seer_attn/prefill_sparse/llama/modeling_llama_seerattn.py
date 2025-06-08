@@ -41,7 +41,7 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
-from seer_attn.llama.configuration_llama_seerattn import SeerAttnLlamaConfig
+from seer_attn.prefill_sparse.llama.configuration_llama_seerattn import SeerAttnLlamaConfig
 from seer_attn.utils import BaseModelOutputWithPastAndSeer, CausalLMOutputWithPastAndSeer
 from seer_attn.prefill_sparse.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
 from seer_attn.modules.common import (
