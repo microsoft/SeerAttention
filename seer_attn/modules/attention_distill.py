@@ -2,7 +2,7 @@ from typing import Optional, TypedDict
 
 import torch
 import torch.nn.functional as F
-from seer_attn.kernels.attn_pooling_kernel import attn_with_pooling
+from seer_attn.kernels.attn_pooling_kernel_2d import attn_with_pooling
 
 from seer_attn.modules.common import (
     repeat_kv,

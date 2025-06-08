@@ -18,32 +18,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified by Yizhao Gao from huggingface llama implementation
-
+# Modified by Yizhao Gao from huggingface qwen implementation
 from typing import Callable, List, Optional, Tuple, Union
 
 import torch
-import torch.utils.checkpoint
 from torch import nn
 import torch.nn.functional as F
 
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache, StaticCache
+from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, StaticCache
 from transformers.generation import GenerationMixin
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+# from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
+    QuestionAnsweringModelOutput,
+    SequenceClassifierOutputWithPast,
+    TokenClassifierOutput,
+)
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_utils import PreTrainedModel
-from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+# from transformers.processing_utils import Unpack
 from transformers.utils import (
+    # LossKwargs,
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
     logging,
     replace_return_docstrings,
 )
-from seer_attn.llama.configuration_llama_seerattn import SeerAttnLlamaConfig
+from transformers.utils.deprecation import deprecate_kwarg
+from seer_attn.qwen.configuration_qwen2_seerattn import SeerAttnQwen2Config
 from seer_attn.utils import BaseModelOutputWithPastAndSeer, CausalLMOutputWithPastAndSeer
-from seer_attn.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
+from seer_attn.prefill_sparse.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
 from seer_attn.modules.common import (
     repeat_kv,
     apply_rotary_pos_emb,
@@ -51,22 +59,23 @@ from seer_attn.modules.common import (
     get_sparse_attn_mask_from_threshold
 )
 from einops import rearrange
-
+import copy, math, os
 from seer_attn.modules.attention_distill import attention_distill_forward
 from seer_attn.modules.attention_forward import sparse_flash_attention_forward
-import copy, math, os
 from huggingface_hub import hf_hub_download
-from flash_attn.layers.rotary import apply_rotary_emb_func
 from seer_attn.modules.layernorm import RMSNorm
-
+from flash_attn.layers.rotary import apply_rotary_emb_func
 
 logger = logging.get_logger(__name__)
 
+_CHECKPOINT_FOR_DOC = "meta-qwen2/Qwen2-2-7b-hf"
+_CONFIG_FOR_DOC = "Qwen2Config"
 
-class LlamaRMSNorm(nn.Module):
+
+class Qwen2RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
-        LlamaRMSNorm is equivalent to T5LayerNorm
+        Qwen2RMSNorm is equivalent to T5LayerNorm
         """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
@@ -83,17 +92,9 @@ class LlamaRMSNorm(nn.Module):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
-ALL_LAYERNORM_LAYERS.append(LlamaRMSNorm)
-
-
-class LlamaRotaryEmbedding(nn.Module):
-    def __init__(
-        self,
-        config: SeerAttnLlamaConfig,
-        device=None,
-    ):
+class Qwen2RotaryEmbedding(nn.Module):
+    def __init__(self, config: SeerAttnQwen2Config, device=None):
         super().__init__()
-        self.rope_kwargs = {}
         # BC: "rope_type" was originally "type"
         if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
             self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
@@ -105,7 +106,7 @@ class LlamaRotaryEmbedding(nn.Module):
         self.config = config
         self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
 
-        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device, **self.rope_kwargs)
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
 
@@ -117,13 +118,14 @@ class LlamaRotaryEmbedding(nn.Module):
         """
         seq_len = torch.max(position_ids) + 1
         if seq_len > self.max_seq_len_cached:  # growth
-            inv_freq, self.attention_scaling = self.rope_init_fn(
-                self.config, device, seq_len=seq_len, **self.rope_kwargs
-            )
+            inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device, seq_len=seq_len)
             self.register_buffer("inv_freq", inv_freq, persistent=False)  # TODO joao: may break with compilation
             self.max_seq_len_cached = seq_len
 
         if seq_len < self.original_max_seq_len and self.max_seq_len_cached > self.original_max_seq_len:  # reset
+            # This .to() is needed if the model has been moved to a device after being initialized (because
+            # the buffer is automatically moved, but not the original copy)
+            self.original_inv_freq = self.original_inv_freq.to(device)
             self.register_buffer("inv_freq", self.original_inv_freq, persistent=False)
             self.max_seq_len_cached = self.original_max_seq_len
 
@@ -149,6 +151,7 @@ class LlamaRotaryEmbedding(nn.Module):
                 cos = emb.cos()
                 sin = emb.sin()
 
+
         # Advanced RoPE types (e.g. yarn) apply a post-processing scaling factor, equivalent to scaling attention
         cos = cos * self.attention_scaling
         sin = sin * self.attention_scaling
@@ -156,15 +159,15 @@ class LlamaRotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
-class LlamaMLP(nn.Module):
+class Qwen2MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=config.mlp_bias)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=config.mlp_bias)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.mlp_bias)
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
@@ -172,10 +175,10 @@ class LlamaMLP(nn.Module):
         return down_proj
 
 
-class LlamaSeerAttention(nn.Module):
-    """SeerAttention: Learning Sparse Attention for Transformers"""
+class SeerAttnQwen2Attention(nn.Module):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: SeerAttnLlamaConfig, layer_idx: int):
+    def __init__(self, config: SeerAttnQwen2Config, layer_idx: int):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -184,19 +187,10 @@ class LlamaSeerAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
-
-        self.q_proj = nn.Linear(
-            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.k_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.v_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.o_proj = nn.Linear(
-            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
-        )
+        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=True)
+        self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
+        self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
 
         self.attn_gate = ATTNGATE_CLASSES[config.seerattn_gate_type](
             config.seerattn_gate_block_size, 
@@ -307,19 +301,27 @@ class LlamaSeerAttention(nn.Module):
         return attn_output, mask_loss, None, attn_gate_output, ground_truth_mask
 
 
-class SeerAttnLlamaDecoderLayer(nn.Module):
-    def __init__(self, config: SeerAttnLlamaConfig, layer_idx: int):
+
+
+class SeerAttnQwen2DecoderLayer(nn.Module):
+    def __init__(self, config: SeerAttnQwen2Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = LlamaSeerAttention(config=config, layer_idx=layer_idx)
+        self.self_attn = SeerAttnQwen2Attention(config=config, layer_idx=layer_idx)
         self.fused_norm = config.fused_norm
-        self.mlp = LlamaMLP(config)
+        self.mlp = Qwen2MLP(config)
         if self.fused_norm:
             self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
             self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
-            self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-            self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        
+        if config.sliding_window and config._attn_implementation != "flash_attention_2":
+            logger.warning_once(
+                f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
+                "unexpected results may be encountered."
+            )
 
     def forward(
         self,
@@ -369,17 +371,20 @@ class SeerAttnLlamaDecoderLayer(nn.Module):
 
         return outputs
 
-class SeerAttnLlamaPreTrainedModel(PreTrainedModel):
-    config_class = SeerAttnLlamaConfig
+
+class SeerAttnQwen2PreTrainedModel(PreTrainedModel):
+    config_class = SeerAttnQwen2Config
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["SeerAttnLlamaDecoderLayer"]
+    _no_split_modules = ["SeerAttnQwen2DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn_2 = True
     _supports_sdpa = True
+    _supports_flex_attn = True
     _supports_cache_class = True
     _supports_quantized_cache = True
     _supports_static_cache = True
+    _supports_attention_backend = True
 
     def _init_weights(self, module):
         std = self.config.initializer_range
@@ -391,35 +396,33 @@ class SeerAttnLlamaPreTrainedModel(PreTrainedModel):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
-        
         elif isinstance(module, MultiHeadLinear):
             module.weight.data.normal_(mean=0.0, std=std)
 
 
-class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
+class SeerAttnQwen2Model(SeerAttnQwen2PreTrainedModel):
     """
-    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`SeerAttnLlamaDecoderLayer`]
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`Qwen2DecoderLayer`]
 
     Args:
-        config: SeerAttnLlamaConfig
+        config: Qwen2Config
     """
 
-    def __init__(self, config: SeerAttnLlamaConfig):
+    def __init__(self, config: SeerAttnQwen2Config):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [SeerAttnLlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [SeerAttnQwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = LlamaRotaryEmbedding(config=config)
-        
-        #Added for seerattn, block rotary embedding
+        self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = Qwen2RotaryEmbedding(config=config)
+        self.gradient_checkpointing = False
         block_config = copy.deepcopy(config)
         block_config.hidden_size = config.seerattn_gate_hidden_size * config.num_attention_heads
-        self.block_rotary_emb = LlamaRotaryEmbedding(config=block_config)
+        self.block_rotary_emb = Qwen2RotaryEmbedding(config=block_config)
        
         self.gradient_checkpointing = False
 
@@ -445,7 +448,7 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndSeer]:
-
+        
         if attention_mask is not None:
             if not (attention_mask == 0).any().item():
                 attention_mask = None
@@ -485,15 +488,16 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
             attention_mask,
             inputs_embeds,
         )
-        
+
         hidden_states = inputs_embeds
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
-        
+
         #Added for seerattn
         block_position_ids = position_ids[:, 0::self.config.seerattn_gate_block_size] ## downsampled position ids
         block_position_embeddings = self.block_rotary_emb(hidden_states, block_position_ids) # downsampled position embeddings
+
 
 
         # decoder layers
@@ -538,7 +542,7 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
                 )
 
             hidden_states = layer_outputs[0]
-            
+
             mask_loss = layer_outputs[1]
             total_mask_loss += mask_loss
 
@@ -621,15 +625,14 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
 
         return gate_mask
 
-
-
-class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
+class SeerAttnQwen2ForCausalLM(SeerAttnQwen2PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
+    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = SeerAttnLlamaModel(config)
+        self.model = SeerAttnQwen2Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
@@ -654,8 +657,8 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model
 
-    #@add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
-    #@replace_return_docstrings(output_type=CausalLMOutputWithPastAndSeer, config_class=_CONFIG_FOR_DOC)
+    @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
+    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -671,6 +674,7 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 1,
         **kwargs,
+        # **kwargs: Unpack[KwargsForCausalLM],
     ) -> Union[Tuple, CausalLMOutputWithPastAndSeer]:
         r"""
         Args:
@@ -692,10 +696,10 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         Example:
 
         ```python
-        >>> from transformers import AutoTokenizer, SeerAttnLlamaForCausalLM
+        >>> from transformers import AutoTokenizer, Qwen2ForCausalLM
 
-        >>> model = SeerAttnLlamaForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
-        >>> tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+        >>> model = Qwen2ForCausalLM.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
+        >>> tokenizer = AutoTokenizer.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
 
         >>> prompt = "Hey, are you conscious? Can you talk to me?"
         >>> inputs = tokenizer(prompt, return_tensors="pt")
@@ -705,7 +709,6 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -726,12 +729,15 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
             cache_position=cache_position,
             **kwargs,
         )
+
         hidden_states = outputs[0]
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
+
         loss = None
         if not self.training and labels is not None: ## current self-distillation training does not require loss computation, re-enable if needed
+            # loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
             loss_fct = torch.nn.CrossEntropyLoss(reduction='sum')
             valid_seq_len = input_ids.shape[-1] - 1
             valid_seq_len_slide_win = torch.sum(labels[:, 1:] >= 0).item()
@@ -745,7 +751,8 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
                 shift_labels = shift_labels.to(shift_logits.device)
                 loss += loss_fct(shift_logits, shift_labels)
             loss /= valid_seq_len_slide_win  
-        #print("loss:", loss)
+
+
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
@@ -760,7 +767,7 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
             mask_ground_truths=outputs.mask_ground_truths,
             mask_loss=outputs.mask_loss,
         )
-
+    
     def prepare_inputs_for_generation(
         self,
         input_ids,
@@ -777,8 +784,10 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
         # Exception 2: some generation methods do special slicing of input_ids, so we don't need to do it here
         if past_key_values is not None:
             if inputs_embeds is not None:  # Exception 1
-                input_ids = input_ids[:, -cache_position.shape[0] :]
-            elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
+                input_ids = input_ids[:, -cache_position.shape[0]:]
+            elif (
+                input_ids.shape[1] != cache_position.shape[0]
+            ):  # Default case (the "else", a no op, is Exception 2)
                 input_ids = input_ids[:, cache_position]
 
         if attention_mask is not None and position_ids is None:
@@ -786,13 +795,17 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
             if past_key_values:
-                position_ids = position_ids[:, -input_ids.shape[1] :]
+                position_ids = position_ids[:, -input_ids.shape[1]:]
+
+                # # This `clone` call is needed to avoid recapturing cuda graphs with `torch.compile`'s  `mode="reduce-overhead`, as otherwise the input `position_ids` would have various stride during the decoding. Here, simply using `.contiguous()` is not sufficient as in the batch size = 1 case, `position_ids` is already contiguous but with varying stride which retriggers a capture.
+                # position_ids = position_ids.clone(memory_format=torch.contiguous_format)
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and cache_position[0] == 0:
             model_inputs = {"inputs_embeds": inputs_embeds}
         else:
-            model_inputs = {"input_ids": input_ids.contiguous()}  # `contiguous()` needed for compilation use cases
+            # The clone here is for the same reason as for `position_ids`.
+            model_inputs = {"input_ids": input_ids.contiguous()}
 
         model_inputs.update(
             {
@@ -809,7 +822,7 @@ class SeerAttnLlamaForCausalLM(SeerAttnLlamaPreTrainedModel, GenerationMixin):
     def from_pretrained(cls, pretrained_model_name_or_path, load_gate=True, *model_args, **kwargs):
         # Call the original method first
         if load_gate:
-            config = SeerAttnLlamaConfig.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+            config = SeerAttnQwen2Config.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
             base_model = config.base_model
             for key in list(kwargs.keys()):
                 if hasattr(config, key) and key != "torch_dtype":
