@@ -16,7 +16,7 @@ base_model=${base_model:-"meta-llama/Llama-3.1-8B-Instruct"}
 run_name="${gate_type}_lr${lr}_maxlen${training_max_length}_warmup${warmup_steps}_bs${bs}_steps${steps}_gatelossscale${gate_loss_scale}"
 
 echo $run_name
-torchrun --nproc_per_node=$gpus --master_port=10003 distillation.py  \
+torchrun --nproc_per_node=$gpus --master_port=10003 distillation_prefill.py  \
         --base_model ${base_model} \
         --seerattn_gate_type $gate_type \
         --bf16 True \

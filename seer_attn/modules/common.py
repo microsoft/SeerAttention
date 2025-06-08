@@ -2,12 +2,48 @@ import torch
 from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
 import math
 import torch.nn.functional as F
+import torch.nn as nn
+
+class RMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
+        """
+        RMSNorm is equivalent to T5LayerNorm
+        """
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
+
+    def extra_repr(self):
+        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
+
+
+
 
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_pos_emb_single(x, cos, sin, position_ids=None, unsqueeze_dim=1):
+    """Applies Rotary Position Embedding to the query and key tensors."""
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+ 
+    rotary_dim = cos.shape[-1]
+    if x.shape[-1] != rotary_dim:
+        x_rot, x_pass = x[..., :rotary_dim], x[..., rotary_dim:]
+        x_embed = torch.cat([(x_rot * cos) + (rotate_half(x_rot) * sin), x_pass], dim=-1)
+    else:
+        x_embed = (x * cos) + (rotate_half(x) * sin)
+    return x_embed
 
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -32,8 +68,16 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
+
+    rotary_dim = cos.shape[-1]
+    if q.shape[-1] != rotary_dim:
+        q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+        k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+        q_embed = torch.cat([(q_rot * cos) + (rotate_half(q_rot) * sin), q_pass], dim=-1)
+        k_embed = torch.cat([(k_rot * cos) + (rotate_half(k_rot) * sin), k_pass], dim=-1)
+    else:
+        q_embed = (q * cos) + (rotate_half(q) * sin)
+        k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
 
@@ -182,3 +226,59 @@ def get_sparse_attn_mask_from_threshold(x, threshold, use_dense_for_last_block=F
         dense_mask[:, :,-2:,:] = True 
     dense_mask.tril_()
     return  dense_mask
+
+
+def get_indice(maxseq, cu_seqlen):
+    assert cu_seqlen.dim() == 1, "cu_seqlen must be a 1D tensor"
+    bsz = cu_seqlen.size(0) - 1
+    lengths = cu_seqlen[1:] - cu_seqlen[:-1]
+    maxseq = lengths.max().item()
+    device = cu_seqlen.device
+    nnz = cu_seqlen[-1].item()
+    # Compute batch indices for each element in the input tensor
+    batch_idx = torch.repeat_interleave(torch.arange(bsz, device=device), lengths)
+
+    # Compute start indices for each batch and repeat them according to their lengths
+    start_indices = cu_seqlen[:-1]
+    batch_start = torch.repeat_interleave(start_indices, lengths)
+
+    # Calculate sequence positions within each batch
+    seq_pos = torch.arange(nnz, device=device) - batch_start
+    # Generate the indices in the flattened padded tensor
+    indices = batch_idx * maxseq + seq_pos
+    return indices
+
+def compute_oracle_sparse_mask(q, k, attention_mask, block_size, threshold):
+    batch_size, q_len, num_q_heads, head_dim = q.shape
+    _, kv_len, num_kv_heads, _ = k.shape
+    num_gqa_groups = num_q_heads // num_kv_heads
+    
+    if q_len > 1: # use dense prefill for sparse decode
+        block_sparse_mask = None
+    else:
+        q = q.transpose(1, 2) # (b, num_q_heads, q_len, d)
+        k = k.transpose(1, 2) # (b, num_kv_heads, kv_len, d)
+
+        # Repeat K heads for GQA compatibility
+        if num_gqa_groups > 1:
+            k = repeat_kv(k, num_gqa_groups)
+
+        attn_weights = torch.einsum('bhid, bhdj -> bhij', q, k.transpose(-1, -2)) * (head_dim**-0.5) # (b, num_q_heads, q_len, kv_len)
+
+        #q_len=1, (b, num_q_heads, q_len, kv_len) -> (b, num_q_heads, kv_len), as block_sparse_mask must in bhs
+        attn_weights = attn_weights.squeeze(2)
+        
+        #from 2D to 3D, (b,kv_len) -> (b,1,kv_len)
+        attention_mask=attention_mask.unsqueeze(1)
+        # note attention_mask is in int/float, with 1 means True.
+        # our block attention_mask is in bool.
+        attn_weights = attn_weights.masked_fill(~attention_mask.bool(), float('-inf'))
+        
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
+
+        attn_weights = F.max_pool2d(attn_weights, kernel_size=(num_gqa_groups, block_size), stride=(num_gqa_groups, block_size), ceil_mode=True)
+
+        block_sparse_mask = attn_weights > threshold  
+    
+    return block_sparse_mask
+

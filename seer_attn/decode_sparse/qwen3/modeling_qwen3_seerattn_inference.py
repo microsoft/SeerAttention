@@ -12,66 +12,41 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 from torch import nn
 import torch.nn.functional as F
 
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, StaticCache
+from transformers.cache_utils import Cache, DynamicCache
+from transformers.generation.logits_process import TopPLogitsWarper
 from transformers.generation import GenerationMixin
-from transformers.integrations import use_kernel_forward_from_hub
-from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
-from transformers.modeling_outputs import (
-    BaseModelOutputWithPast,
-    CausalLMOutputWithPast,
-    QuestionAnsweringModelOutput,
-    SequenceClassifierOutputWithPast,
-    TokenClassifierOutput,
-)
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
-from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
-from transformers.processing_utils import Unpack
+
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+from transformers.modeling_utils import PreTrainedModel
+# from transformers.processing_utils import Unpack
 from transformers.utils import (
-    LossKwargs,
-    add_code_sample_docstrings,
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-    can_return_tuple,
-    is_torch_flex_attn_available,
     logging,
-    replace_return_docstrings,
 )
-#seer added
-from seer_attn.decode_sparse.qwen3.configuration_qwen3_seerattn import SeerAttnQwen3Config
-from seer_attn.utils import BaseModelOutputWithPastAndCache, CausalLMOutputWithPastAndCache
-from seer_attn.decode_sparse.attn_gate_inf import ATTNGATE_CLASSES, get_sparse_attn_mask_from_threshold, get_sparse_attn_mask_from_budget
+from .configuration_qwen3_seerattn import SeerAttnQwen3Config
+from ...utils import BaseModelOutputWithPastAndCache, CausalLMOutputWithPastAndCache
+from ..attn_gate_inf import ATTNGATE_CLASSES
 import copy, math, os
 from einops import rearrange
-from seer_attn.decode_sparse.attention_forward_sparse import sparse_flash_attention_forward
-from seer_attn.decode_sparse.attention_forward_dense import dense_flash_attention_forward
-from seer_attn.kernels.varlen.oracle_sparse import oracle_sparse
-from seer_attn.modules.layernorm import RMSNorm
+from ..attention_forward_sparse import sparse_flash_attention_forward
+from ..attention_forward_dense import dense_flash_attention_forward
+from ...modules.layernorm import RMSNorm
 from flash_attn.layers.rotary import apply_rotary_emb_func
-from seer_attn.decode_sparse.cache_utils import KCompressionCache
-from seer_attn.modules.common import apply_rotary_pos_emb
+from ...decode_sparse.cache_utils import KCompressionCache
+from ...modules.common import apply_rotary_pos_emb
 
 
 
 from huggingface_hub import hf_hub_download
 
-from transformers.generation.logits_process import TopPLogitsWarper
-
-
 logger = logging.get_logger(__name__)
 
-_CHECKPOINT_FOR_DOC = "Qwen/Qwen3-8B"
-_CONFIG_FOR_DOC = "Qwen3Config"
-
-
-@use_kernel_forward_from_hub("RMSNorm")
 class Qwen3RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
@@ -91,7 +66,8 @@ class Qwen3RMSNorm(nn.Module):
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
     
-    
+
+
 class Qwen3MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -107,35 +83,6 @@ class Qwen3MLP(nn.Module):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
 
-
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
-    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
-    """
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
-
-def compute_oracle_sparse_mask(q, k, cache_seqlens, block_attention_mask, block_size, sparsity_method, threshold=0.0, block_budget=2048, block_sliding_window_size=0):
-    #batch_size, q_len, num_q_heads, head_dim = q.shape
-    q_len = q.shape[1]
-    if q_len > 1: # use dense prefill for sparse decode
-        block_sparse_mask = None
-    else:
-
-        attn_weights = oracle_sparse(q, k, cache_seqlens, block_size)
-        
-        if sparsity_method == "token_budget":
-            block_sparse_mask = get_sparse_attn_mask_from_budget(attn_weights, block_budget, block_sliding_window_size, block_attention_mask)
-        elif sparsity_method == "threshold":
-            block_sparse_mask = get_sparse_attn_mask_from_threshold(attn_weights, threshold, block_sliding_window_size, block_attention_mask) 
-
-        block_sparse_mask[:, :, -1] = True
-    
-    return block_sparse_mask
 
 
 class Qwen3SeerAttention(nn.Module):
@@ -184,12 +131,15 @@ class Qwen3SeerAttention(nn.Module):
             num_q_head=config.num_attention_heads,
             q_head_pooling_type=config.seerattn_q_head_pooling_type,
             use_flash_rope=config.use_flash_rope,
+            use_qk_norm=config.seerattn_use_qk_norm,
         )
 
         self.mask_loss_func = torch.nn.KLDivLoss()
         self.use_flash_rope = config.use_flash_rope
         self.seerattn_implementation = config.seerattn_implementation
         self.seerattn_output_sparsity = config.seerattn_output_sparsity
+        self.block_budget = config.seerattn_token_budget // config.seerattn_gate_block_size
+        self.seerattn_start_layer = config.seerattn_start_layer
 
 
     def forward(
@@ -201,6 +151,7 @@ class Qwen3SeerAttention(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         cache_seqlens: Optional[torch.Tensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  
+        position_embeddings_gate_q: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, ## block position embeddings
         block_attention_mask: Optional[torch.Tensor] = None, ## block attention mask
         **kwargs,
@@ -220,6 +171,7 @@ class Qwen3SeerAttention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
 
+
         q_nope, k_nope = q, k
 
         cos, sin = position_embeddings
@@ -237,42 +189,27 @@ class Qwen3SeerAttention(nn.Module):
             v = rearrange(v, '... (h d) -> ... h d', d=self.head_dim)
 
         if self.seerattn_implementation != "seer_dense":
-            if self.seerattn_implementation == "oracle_sparse":
-                block_sparse_mask = compute_oracle_sparse_mask(
-                    q,
-                    k,
-                    cache_seqlens,
-                    block_attention_mask,
-                    self.config.seerattn_gate_block_size,
-                    self.config.seerattn_sparsity_method,
-                    self.config.seerattn_threshold,
-                    self.block_budget,
-                    self.block_sliding_window_size,
-                )
-            else:
-                max_cache_len = k.shape[1]
-                block_sparse_mask = self.attn_gate(
-                    k_nope,
-                    self.layer_idx,
-                    k_compressed_cache,
-                    q_nope,
-                    block_attention_mask,
-                    max_cache_len,
-                    position_embeddings,
-                    block_position_embeddings,
-                    sparsity_method=self.config.seerattn_sparsity_method,
-                    threshold=self.config.seerattn_threshold,
-                    block_budget=self.block_budget,
-                    block_sliding_window_size=self.block_sliding_window_size,
-                )
+            block_sparse_mask = self.attn_gate(
+                k_nope,
+                self.layer_idx,
+                k_compressed_cache,
+                q_nope,
+                block_attention_mask,
+                max_cache_len=k.shape[1],
+                position_embeddings=position_embeddings_gate_q,
+                block_position_embeddings=block_position_embeddings,
+                threshold=self.config.seerattn_threshold,
+                block_budget=self.block_budget,
+                sparsity_method=self.config.seerattn_sparsity_method,
+            )
 
         activate_and_original_block_count = None
-        if self.seerattn_output_sparsity and q_len == 1:
+        if self.seerattn_output_sparsity and q_len == 1 and self.layer_idx >= self.seerattn_start_layer:
             activate_block_count = block_sparse_mask.sum()   # block_sparse_mask in shape batch, kv_heads, seq(block)
             original_block_count = block_attention_mask.sum() * self.config.num_key_value_heads # block_attention_mask in shape batch, 1, seq(block)
             activate_and_original_block_count = (activate_block_count.item(), original_block_count.item())
 
-        if self.config.seerattn_implementation == "seer_dense":
+        if self.config.seerattn_implementation == "seer_dense" or self.layer_idx < self.seerattn_start_layer:
             attn_output = dense_flash_attention_forward(
                 q,
                 k,
@@ -301,12 +238,14 @@ class Qwen3SeerAttention(nn.Module):
 
         return attn_output, activate_and_original_block_count
 
+
 class Qwen3DecoderLayer(nn.Module):
     def __init__(self, config: SeerAttnQwen3Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = Qwen3SeerAttention(config=config, layer_idx=layer_idx)
+        # self.self_attn = SeerAttnQwen3Attention(config=config, layer_idx=layer_idx)
         self.mlp = Qwen3MLP(config)
+        self.self_attn = Qwen3SeerAttention(config=config, layer_idx=layer_idx)
         self.fused_norm = config.fused_norm
 
         if config.fused_norm:
@@ -315,10 +254,7 @@ class Qwen3DecoderLayer(nn.Module):
         else:
             self.input_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
             self.post_attention_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        
-        if (
-            config.sliding_window and config._attn_implementation != "flash_attention_2"
-        ):  # diff with Llama is this warning
+        if config.sliding_window and config._attn_implementation != "flash_attention_2":
             logger.warning_once(
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
                 "unexpected results may be encountered."
@@ -333,6 +269,7 @@ class Qwen3DecoderLayer(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         cache_seqlens: Optional[torch.Tensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.45
+        position_embeddings_gate_q: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
@@ -352,6 +289,7 @@ class Qwen3DecoderLayer(nn.Module):
             cache_position=cache_position,
             cache_seqlens=cache_seqlens,
             position_embeddings=position_embeddings,
+            position_embeddings_gate_q=position_embeddings_gate_q,
             block_position_embeddings=block_position_embeddings,
             block_attention_mask=block_attention_mask,
             **kwargs,
@@ -368,6 +306,7 @@ class Qwen3DecoderLayer(nn.Module):
 
         outputs = (hidden_states,activate_and_original_block_count) 
         return outputs
+
 
 
 class Qwen3RotaryEmbedding(nn.Module):
@@ -464,17 +403,7 @@ class Qwen3PreTrainedModel(PreTrainedModel):
             module.weight.data.fill_(1.0)
 
 
-
-
-
 class Qwen3Model(Qwen3PreTrainedModel):
-    """
-    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`Qwen3DecoderLayer`]
-
-    Args:
-        config: Qwen3Config
-    """
-
     def __init__(self, config: SeerAttnQwen3Config):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
@@ -490,7 +419,8 @@ class Qwen3Model(Qwen3PreTrainedModel):
         block_config = copy.deepcopy(config)
         block_config.hidden_size = config.seerattn_gate_hidden_size * config.num_attention_heads
         self.block_rotary_emb = Qwen3RotaryEmbedding(config=block_config)
-       
+        self.rotary_emb_gate_q = Qwen3RotaryEmbedding(config=block_config)
+
         self.gradient_checkpointing = False
         self.num_layers = config.num_hidden_layers
 
@@ -505,18 +435,17 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
     def forward(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
+        input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         k_compressed_cache: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
-    ) -> BaseModelOutputWithPastAndCache:
+    ) -> Union[Tuple, BaseModelOutputWithPastAndCache]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -524,17 +453,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-
-        if self.gradient_checkpointing and self.training and use_cache:
-            logger.warning_once(
-                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+            raise ValueError(
+                "You cannot specify both input_ids and inputs_embeds at the same time, and must specify either one"
             )
-            use_cache = False
-
-        # TODO (joao): remove this exception in v4.56 -- it exists for users that try to pass a legacy cache
-        if not isinstance(past_key_values, (type(None), Cache)):
-            raise ValueError("The `past_key_values` should be either a `Cache` object or `None`.")
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -559,12 +480,18 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         hidden_states = inputs_embeds
 
-        # create position embeddings to be shared across the decoder layers
+
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
         
-        block_position_ids = position_ids[:, 0::self.config.seerattn_gate_block_size] ## downsampled position ids
-        block_position_embeddings = self.block_rotary_emb(hidden_states, block_position_ids) # downsampled position embeddings
-        
+        if self.config.seerattn_use_rope:
+            block_position_ids = position_ids[:, 0::self.config.seerattn_gate_block_size] ## downsampled position ids
+            block_position_embeddings = self.block_rotary_emb(hidden_states, block_position_ids) # downsampled position embeddings
+            position_embeddings_gate_q = self.rotary_emb_gate_q(hidden_states, position_ids) 
+        else:
+            block_position_embeddings = None
+            position_embeddings_gate_q = None
+
+
         block_attention_mask = self._gen_block_attention_mask(
             attention_mask
         )
@@ -586,6 +513,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 cache_position=cache_position,
                 cache_seqlens=cache_seqlens,
                 position_embeddings=position_embeddings,
+                position_embeddings_gate_q=position_embeddings_gate_q,
                 block_position_embeddings=block_position_embeddings,
                 block_attention_mask=block_attention_mask,
             )
@@ -597,7 +525,6 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         hidden_states = self.norm(hidden_states)
 
-        # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
@@ -624,7 +551,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         mask = mask.unsqueeze(1)
         return mask
 
-class KwargsForCausalLM(FlashAttentionKwargs, LossKwargs): ...
+
 class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
@@ -638,7 +565,6 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.num_layers = config.num_hidden_layers
         self.block_size = config.seerattn_gate_block_size
 
-        # Initialize weights and apply final processing
         self.post_init()
 
     def get_input_embeddings(self):
@@ -673,46 +599,16 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         output_hidden_states: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
-        **kwargs: Unpack[KwargsForCausalLM],
-    ) -> CausalLMOutputWithPastAndCache:
-        r"""
-            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+        **kwargs,
+    ) -> Union[Tuple, CausalLMOutputWithPastAndCache]:
 
-            logits_to_keep (`int` or `torch.Tensor`, *optional*):
-                If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
-                `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
-                token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
-                If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
-                This is useful when using packed tensor format (single dimension for batch and sequence length).
-
-        Returns:
-
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, Qwen3ForCausalLM
-
-        >>> model = Qwen3ForCausalLM.from_pretrained("Qwen/Qwen3-8B")
-        >>> tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs: BaseModelOutputWithPast = self.model(
+
+        outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -723,7 +619,6 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             cache_position=cache_position,
-            **kwargs,
         )
 
         hidden_states = outputs.last_hidden_state
@@ -782,6 +677,7 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         sparsitys_info_list = []
         for step in range(max_length - generated.shape[1]):
             # Forward pass: get next token logits and updated past_key_values
+            torch.cuda.empty_cache()
             with torch.no_grad():
                 outputs = self(
                     cur_input, 
@@ -839,11 +735,10 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             if active_local.sum().item() < cur_to_orig.shape[0]:
                 active_indices_local = torch.nonzero(active_local, as_tuple=False).squeeze(-1)
                 # Update the kv cache using indices relative to the current cache.
-                print("active_indices_local", active_indices_local, "kvlen:", attention_mask.shape[1], flush=True)
+                print("active_local_batches", active_indices_local, "kvlen:", attention_mask.shape[1], flush=True)
                 current_kvcache.batch_select_indices(active_indices_local)
                 if self.config.seerattn_implementation != "oracle_sparse":
                     current_kcompressed_cache.batch_select_indices(active_indices_local)
-                torch.cuda.empty_cache()
                 if attention_mask is not None:
                     attention_mask = attention_mask[active_indices_local]
 
