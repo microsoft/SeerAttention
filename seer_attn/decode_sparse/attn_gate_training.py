@@ -127,7 +127,6 @@ class AttnGate(nn.Module):
             attention_mask,
             position_embeddings_gate_q=None,
             block_position_embeddings=None, 
-            block_slice_mode=False,
         ):  
         
         cu_seqlens, max_seqlen, unpad_indices = unpadded_lengths
@@ -168,11 +167,7 @@ class AttnGate(nn.Module):
         
         if self.q_head_pooling_type == "Qorig":
             k = repeat_kv(k, self.gqa_group_size)
-
-        if block_slice_mode:
-            q = q[:, :, self.block_size-1::self.block_size, :].contiguous()
-            attention_mask = attention_mask[:, :, self.block_size-1::self.block_size, :].contiguous()
-
+            
         attn = torch.matmul(q, k.transpose(-1, -2)) * (1 / math.sqrt(self.gate_hidden_size))
 
         if self.q_head_pooling_type == "Qorig":

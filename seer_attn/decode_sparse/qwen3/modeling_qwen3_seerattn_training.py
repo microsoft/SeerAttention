@@ -133,7 +133,6 @@ class SeerAttnQwen3Attention(nn.Module):
             block_attention_mask,
             position_embeddings_gate_q,
             block_position_embeddings,
-            self.block_slice_mode,
         )
 
         cos, sin = position_embeddings
@@ -165,14 +164,9 @@ class SeerAttnQwen3Attention(nn.Module):
         for i in range(bsz):
             seq_len = cu_seqlens[i + 1] - cu_seqlens[i]
             start_index = int(seq_len * self.loss_slice_ratio)
-            mask1d_ground_truth_i = mask1d_ground_truth[i:i+1, :, start_index:seq_len]
-            mask1d_ground_truth_i = F.max_pool3d(mask1d_ground_truth_i, kernel_size=[self.num_key_value_groups, 1, 1], stride=[self.num_key_value_groups, 1, 1])
-            block_attention_mask_i = block_attention_mask[start_index:seq_len]
-            mask1d_ground_truth_i.masked_fill_(~block_attention_mask_i, 0.0)
-            for kv in range(self.num_key_value_heads):
-                predict_mask_i = F.log_softmax(predict_mask[i, kv, start_index:seq_len], dim=-1)
-                mask1d_ground_truth_i_kv = mask1d_ground_truth_i[0, kv]
-                gate_loss += self.loss_fct(predict_mask_i, mask1d_ground_truth_i_kv) 
+            predict_mask_i = F.log_softmax(predict_mask[i, :, start_index:seq_len], dim=-1).to(torch.float32)
+            mask1d_ground_truth_i = mask1d_ground_truth[i, :, start_index:seq_len].to(torch.float32)
+            gate_loss += self.loss_fct(predict_mask_i, mask1d_ground_truth_i) 
         gate_loss = gate_loss / bsz
 
         return attn_output, gate_loss
@@ -387,6 +381,12 @@ class SeerAttnQwen3Model(SeerAttnQwen3PreTrainedModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+
+
+        if position_ids is None:
+            position_ids = torch.arange(
+                0, inputs_embeds.shape[0], device=inputs_embeds.device # change to 0 for now!!!!!
+            ).unsqueeze(0)
 
         hidden_states = inputs_embeds
 
