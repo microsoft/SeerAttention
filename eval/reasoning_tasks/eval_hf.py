@@ -18,7 +18,7 @@ from Utils.math_normalization import *
 from Utils.grader import *
 import pickle
 from math import comb
-from seer_attn import SeerDecodingQwen2ForCausalLM, SeerDecodingQwen3ForCausalLM, SeerDecodingPhi3ForCausalLM
+from seer_attn import SeerDecodingQwen2ForCausalLM, SeerDecodingQwen3ForCausalLM
 from generation_utils import batch_exist_generate
 from typing import Optional, Tuple
 
@@ -88,6 +88,7 @@ def parse_args():
     parser.add_argument("--sliding_window_size", default=0, type=int)
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--token_budget", default=2048, type=int)
+    parser.add_argument("--start_layer", default=0, type=int)
     parser.add_argument("--block_size", default=64, type=int)
     parser.add_argument("--rank", default=0, type=int)
     parser.add_argument("--attention_implementation", default="seer_sparse", choices=["seer_sparse", "seer_dense", "oracle_sparse", "fa2", "sdpa"], type=str)
@@ -205,6 +206,7 @@ def infer(args):
     completions = []
     generate_lens = []
     all_batch_sparsitys_info = []
+    quest_sparsitys= []
     total_time = 0
 
     if os.path.exists(completion_filepath):
@@ -238,10 +240,6 @@ def infer(args):
             model_class = SeerDecodingQwen3ForCausalLM
         elif "qwen" in model_name_lower:
             model_class = SeerDecodingQwen2ForCausalLM
-        elif "phi" in model_name_lower:
-            model_class = SeerDecodingPhi3ForCausalLM
-        elif "mimo" in model_name_lower:
-            model_class = SeerDecodingQwen2ForCausalLM
         else:
             raise ValueError(f"model: {model_name_or_path} not supported in SeerDecoding")
         
@@ -259,6 +257,7 @@ def infer(args):
                                             use_flash_rope=args.use_fused_kernel,
                                             fused_norm=args.use_fused_kernel,
                                             seerattn_output_sparsity=args.profile_sparsity,
+                                            seerattn_start_layer=args.start_layer,
         )
     elif args.attention_implementation == "fa2":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
@@ -336,6 +335,12 @@ def infer(args):
             prompt_tokens = (batch_input_ids[j] != eos_token_id).sum().item()
             generate_lens.append(output_tokens - prompt_tokens)
 
+            if output_tokens <= args.token_budget:
+                quest_sparsitys.append(0)
+            else:
+                sparsity = (1 - args.token_budget / output_tokens) * 100
+                quest_sparsitys.append(sparsity)
+
         batch_results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
         completions.extend(batch_results)
         print("finish batch: ", i, flush=True)
@@ -373,6 +378,12 @@ def infer(args):
             "generate_lens": generate_lens,
             "total_time": total_time,
             "overall_sparsity": overall_sparsity_ratio,
+        }
+    elif args.attention_implementation == "quest":
+        other_info = {
+            "generate_lens": generate_lens,
+            "total_time": total_time,
+            "overall_sparsity": sum(quest_sparsitys) / len(quest_sparsitys),
         }
     else:
         other_info = {

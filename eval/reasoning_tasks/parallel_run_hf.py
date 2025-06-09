@@ -7,35 +7,16 @@ import time
 from collections import deque # Use deque for efficient pop/append
 
 
-def Choose_task_config(model_size, output_dir):
+def choose_task_config(model_size, output_dir):
     output_dir = output_dir.lower()
     if model_size != "32B":
-        if "phi" in output_dir:
-            task_config = {
-                "aime24": {"bs": 30, "total_run": 64},
-                "aime25": {"bs": 30, "total_run": 64},
-                "math": {"bs": 100, "total_run": 8},
-                "gpqa": {"bs": 50, "total_run": 16},
-                "olympiadbench": {"bs": 30, "total_run": 8},
-                "livecodebench": {"bs": 30, "total_run": 8},
-            }
-        else:
-            task_config = {
-                "aime24": {"bs": 30, "total_run": 64},
-                "aime25": {"bs": 30, "total_run": 64},
-                "math": {"bs": 250, "total_run": 8},
-                "gpqa": {"bs": 100, "total_run": 16},
-                "olympiadbench": {"bs": 60, "total_run": 8},
-                "livecodebench": {"bs": 60, "total_run": 8},
-            }
-    elif model_size == "32B":
         task_config = {
-            "aime24": {"bs": 30, "total_run": 64},
-            "aime25": {"bs": 30, "total_run": 64},
-            "math": {"bs": 100, "total_run": 8},
-            "gpqa": {"bs": 50, "total_run": 16},
-            "olympiadbench": {"bs": 30, "total_run": 8},
-            "livecodebench": {"bs": 30, "total_run": 8},
+            "aime24": {"bs": 15, "total_run": 64},
+            "aime25": {"bs": 15, "total_run": 64},
+            "math": {"bs": 75, "total_run": 8},
+            "gpqa": {"bs": 15, "total_run": 2},
+            "olympiadbench": {"bs": 15, "total_run": 8},
+            "livecodebench": {"bs": 15, "total_run": 8},
         }
     else:
         raise ValueError(f"Not support model_size: {model_size}")
@@ -63,6 +44,7 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", default="0", type=str)
     parser.add_argument("--token_budget", default="2048", type=str)
     parser.add_argument("--max_tokens", default="32768", type=str)
+    parser.add_argument("--start_layer", type=int, default=0, help="Start sparse layer, '0' means all layers")
     parser.add_argument("--profile_sparsity", action="store_true",
                         help="Flag to profile sparsity in eval.py")
     args = parser.parse_args()
@@ -82,8 +64,10 @@ if __name__ == "__main__":
     model_subfolder = os.path.basename(model_dir.rstrip('/'))
     output_dir = os.path.join(args.output_dir, model_subfolder)
     attention_implementation = args.attention_implementation
+    if attention_implementation == "seer_sparse":
+        assert len(block_sizes) == 1 and block_sizes[0] == "64", "seer_sparse only supports block_size=64"
 
-    task_config = Choose_task_config(args.model_size, output_dir)
+    task_config = choose_task_config(args.model_size, output_dir)
 
     for task in tasks:
         if task not in task_config:
@@ -137,9 +121,9 @@ if __name__ == "__main__":
                 run_counter = 0
 
                 if sparsity_method == "token_budget":
-                    output_config_subdir = os.path.join(output_dir, f"{task}_bs{bs}_{sparsity_method}_B{token_budget}_win{sliding_window_size}_blocksize{block_size}_{attention_implementation}")
+                    output_config_subdir = os.path.join(output_dir, f"{task}_bs{bs}_{sparsity_method}_B{token_budget}_start{args.start_layer}_blocksize{block_size}_{attention_implementation}")
                 elif sparsity_method == "threshold":
-                    output_config_subdir = os.path.join(output_dir, f"{task}_bs{bs}_{sparsity_method}_T{threshold}_win{sliding_window_size}_blocksize{block_size}_{attention_implementation}")
+                    output_config_subdir = os.path.join(output_dir, f"{task}_bs{bs}_{sparsity_method}_T{threshold}_start{args.start_layer}_blocksize{block_size}_{attention_implementation}")
 
                 os.makedirs(output_config_subdir, exist_ok=True)
 
@@ -182,6 +166,7 @@ if __name__ == "__main__":
                             "--block_size", str(block_size),
                             "--run_id", str(current_run_id),
                             "--max_tokens", str(max_tokens),
+                            "--start_layer", str(args.start_layer),
                         ] + cli_params
 
                         if args.profile_sparsity:
@@ -193,7 +178,7 @@ if __name__ == "__main__":
                     if (run_counter < total_run and not available_gpus) or (run_counter >= total_run and active_procs):
                         time.sleep(5)
 
-                if task != "livecodebench":
+                if task != "livecodebench": # remove this line at last
                     get_results_cmd = [
                         "python", "summary_results.py",
                         "--model_name_or_path", model_dir,

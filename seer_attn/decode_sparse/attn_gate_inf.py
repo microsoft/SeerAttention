@@ -6,68 +6,23 @@ from itertools import combinations
 from flash_attn.bert_padding import index_put_first_axis 
 # from seer_attn.kernels.pooling_varlen_bshd import maxpool_varlen_leftpad, avgpool_varlen_leftpad
 from flash_attn.layers.rotary import apply_rotary_emb_func
+from seer_attn.modules.common import apply_rotary_pos_emb_single, RMSNorm, repeat_kv, repeat_kv_varlen
+from seer_attn.kernels.varlen.oracle_sparse import oracle_sparse
 
 
-import os
 import math
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
 
-
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-    """Applies Rotary Position Embedding to the query and key tensors."""
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
-
-
-def apply_rotary_pos_emb_single(x, cos, sin, position_ids=None, unsqueeze_dim=1):
-    """Applies Rotary Position Embedding to the query and key tensors."""
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-    x_embed = (x * cos) + (rotate_half(x) * sin)
-    return x_embed
 
 def min_pool3d(input, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False):
     return -F.max_pool3d(-input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode)
 
 
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
-    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
-    """
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
+def get_sparse_attn_mask_from_threshold(x, threshold):
+    dense_mask = x > threshold 
+    return  dense_mask
 
-def get_sparse_attn_mask_from_threshold(x, threshold, sliding_window_size, block_attention_mask):
-    block_seq_len = x.size(-1)
-    
-    if block_seq_len <= sliding_window_size:
-        full_mask = torch.ones_like(x, dtype=torch.bool, device=x.device)
-        full_mask = full_mask & block_attention_mask
-        return full_mask
-
-    final_mask = x > threshold
-
-    if sliding_window_size > 0:
-        final_mask[..., -sliding_window_size:] = True
-
-    final_mask = final_mask & block_attention_mask
-
-    return final_mask
-
-
-def get_sparse_attn_mask_from_budget(x, block_budget, sliding_window_size, block_attention_mask):
+def get_sparse_attn_mask_from_budget(x, block_budget, block_attention_mask):
     block_seq_len = x.size(-1)
     
     if block_seq_len <= block_budget:
@@ -75,26 +30,35 @@ def get_sparse_attn_mask_from_budget(x, block_budget, sliding_window_size, block
         full_mask = full_mask & block_attention_mask
         return full_mask
 
-    k = block_budget - sliding_window_size
+    k = block_budget 
     
-    mask_sliding = torch.zeros_like(x, dtype=torch.bool, device=x.device)
-    if sliding_window_size > 0:
-        mask_sliding[..., -sliding_window_size:] = True
+    _, topk_indices = torch.topk(x, k=k, dim=-1, sorted=False)
     
-    if k <= 0:
-        final_mask = mask_sliding
-    else:
-        modified_x = x.masked_fill(mask_sliding, float('-inf'))
-        _, topk_indices = torch.topk(modified_x, k=k, dim=-1, sorted=False)
-        
-        mask_extra = torch.zeros_like(x, dtype=torch.bool, device=x.device)
-        mask_extra.scatter_(-1, topk_indices, True)
-        
-        final_mask = mask_sliding | mask_extra
+    mask = torch.zeros_like(x, dtype=torch.bool, device=x.device)
+    mask.scatter_(-1, topk_indices, True)
 
-    final_mask = final_mask & block_attention_mask
+    final_mask = mask & block_attention_mask
     
     return final_mask
+
+def compute_oracle_sparse_mask(q, k, cache_seqlens, block_attention_mask, block_size, sparsity_method, threshold=0.0, block_budget=2048):
+    #batch_size, q_len, num_q_heads, head_dim = q.shape
+    q_len = q.shape[1]
+    if q_len > 1: # use dense prefill for sparse decode
+        block_sparse_mask = None
+    else:
+
+        attn_weights = oracle_sparse(q, k, cache_seqlens, block_size)
+        
+        if sparsity_method == "token_budget":
+            block_sparse_mask = get_sparse_attn_mask_from_budget(attn_weights, block_budget, block_attention_mask)
+        elif sparsity_method == "threshold":
+            block_sparse_mask = get_sparse_attn_mask_from_threshold(attn_weights, threshold) 
+
+        block_sparse_mask[:, :, -1] = True
+    
+    return block_sparse_mask
+
 
 class HeadPoolingLinear(nn.Module):
     def __init__(self, num_k_head, gqa_group_size, model_hidden_size, gate_hidden_size):
@@ -153,7 +117,7 @@ class AttnGate(nn.Module):
                  q_head_pooling_type, 
                  k_pooling_funcs,
                  use_flash_rope,
-
+                 use_qk_norm,
                 ):
         super(AttnGate, self).__init__()
         self.block_size = block_size
@@ -164,6 +128,7 @@ class AttnGate(nn.Module):
         self.gqa_group_size = int(num_q_head // num_k_head)
         self.k_pooling_funcs = k_pooling_funcs
         self.use_flash_rope = use_flash_rope
+        self.use_qk_norm = use_qk_norm
     
 
         self.k_dup_size = len(k_pooling_funcs)
@@ -172,13 +137,17 @@ class AttnGate(nn.Module):
         self.q_head_pooling_type = q_head_pooling_type
         
         if self.q_head_pooling_type == "Qproj":
-            self.mask_linear_q = HeadPoolingLinear(self.num_k_head, self.gqa_group_size, self.model_hidden_size, self.gate_hidden_size)
+            self.attngate_linear_q = HeadPoolingLinear(self.num_k_head, self.gqa_group_size, self.model_hidden_size, self.gate_hidden_size)
         elif self.q_head_pooling_type == "Qavgproj":
-            self.mask_linear_q = MultiHeadLinear(self.model_hidden_size, self.gate_hidden_size, self.num_k_head)
+            self.attngate_linear_q = MultiHeadLinear(self.model_hidden_size, self.gate_hidden_size, self.num_k_head)
         else:
-            self.mask_linear_q = None
-        self.mask_linear_k = MultiHeadLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head)
+            self.attngate_linear_q = None
+        self.attngate_linear_k = MultiHeadLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head)
 
+        if self.use_qk_norm:
+            self.attngate_qnorm = RMSNorm(self.gate_hidden_size, eps=1e-06)
+            self.attngate_knorm = RMSNorm(self.gate_hidden_size, eps=1e-06)
+        
 
     def forward(self, 
             k, # [b, klen, k_head, head_dim]
@@ -189,28 +158,12 @@ class AttnGate(nn.Module):
             max_cache_len=None,
             position_embeddings=None,
             block_position_embeddings=None, 
-            sparsity_method=None,
             threshold=0.0,
-            block_budget=32,
-            block_sliding_window_size=0,
+            block_budget=None,
+            sparsity_method="threshold",
         ):  
-        """
-        This attngate module is only used in inference. 
-        Args:
-            k (torch.Tensor): Key tensor of shape (batch_size, num_key_heads, seqlen, head_dim).
-            layer_idx (int): Layer index.
-            k_compressed_cache (Cache): Cache object for key compressed states.
-            q (torch.Tensor): Query tensor of shape (batch_size, 1, num_query_heads, head_dim).
-            attention_mask (torch.Tensor): Attention mask of shape (batch_size, 1, 1, seqlen).
-            max_cache_len (int): Maximum cache length.
-            position_embeddings: Position embeddings for query tensor.
-            block_position_embeddings: Position embeddings for key tensor.
-            threshold: Threshold for attention mask.
-        """
 
-        is_decode = k.shape[1] == 1 
-        batch_size, _, num_kv_heads, _ = k.shape 
-        kv_len = attention_mask.shape[-1]     
+        is_decode = k.shape[1] == 1        
 
         if is_decode:
             assert q.dim() == 4
@@ -218,13 +171,17 @@ class AttnGate(nn.Module):
             if self.q_head_pooling_type == "Qavgproj" or self.q_head_pooling_type == "Qavg":
                 q = F.avg_pool2d(q, kernel_size=[self.gqa_group_size, 1], stride=[self.gqa_group_size, 1])
             if self.q_head_pooling_type == "Qavgproj" or self.q_head_pooling_type == "Qproj":
-                q = self.mask_linear_q(q)
+                q = self.attngate_linear_q(q)
 
-            cos, sin = position_embeddings
-            if self.use_flash_rope:
-                q = apply_rotary_emb_func(q, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
-            else:
-                q = apply_rotary_pos_emb_single(q, cos, sin, unsqueeze_dim=2)
+            if self.use_qk_norm:
+                q = self.attngate_qnorm(q)
+
+            if position_embeddings is not None:
+                cos, sin = position_embeddings
+                if self.use_flash_rope:
+                    q = apply_rotary_emb_func(q, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
+                else:
+                    q = apply_rotary_pos_emb_single(q, cos, sin, unsqueeze_dim=2)
 
             k = k_compressed_cache.update(k=k, layer_idx=layer_idx, is_decode=is_decode)
 
@@ -232,43 +189,58 @@ class AttnGate(nn.Module):
                 remainder = k_compressed_cache.get_k_remainder(layer_idx)
                 k_compressed = [pool_func(remainder, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
                 k_compressed = torch.cat(k_compressed, dim=-1)        
-                k_compressed = self.mask_linear_k(k_compressed)
-                cos, sin = block_position_embeddings
-                if self.use_flash_rope:
-                    k = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
-                else:
-                    k = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
+                k_compressed = self.attngate_linear_k(k_compressed) ## [b, 1, k_head, dim]
+                
+
+                if self.use_qk_norm:
+                    k_compressed = self.attngate_knorm(k_compressed)
+
+                if position_embeddings is not None:
+                    cos, sin = position_embeddings ## change to positional embedding instead of block_position_embeddings
+                    if self.use_flash_rope:
+                        k = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
+                    else:
+                        k = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
                 k_compressed = k_compressed_cache.update(k_compressed=k_compressed, layer_idx=layer_idx, is_decode=is_decode)
 
 
-            q = q.squeeze(1) ## currently only for khead size of q
+            q = q.squeeze(1) 
+
+            if self.q_head_pooling_type == "Qorig":
+                q = q.view(q.shape[0], self.num_k_head, self.gqa_group_size, q.shape[2])
+                attn = torch.einsum('bkgd,bskd->bks', q, k)
+                scale = 1 / (math.sqrt(self.gate_hidden_size) * self.gqa_group_size)
+                attn.mul_(scale)
+            else: 
+                attn = torch.einsum('bhd,bshd->bhs', q, k)
+                attn = attn * (1 / math.sqrt(self.gate_hidden_size))
 
 
-            attn = torch.einsum('bhd,bshd->bhs', q, k)
-            attn = attn * (1 / math.sqrt(self.gate_hidden_size))
             if attention_mask.dtype == torch.bool:
                 attn = attn.masked_fill(~attention_mask, -1e20)
             else:
                 attn = attn + attention_mask
             attn = F.softmax(attn, dim=-1)
-            
-
             if sparsity_method == "token_budget":
-                mask = get_sparse_attn_mask_from_budget(attn, block_budget, block_sliding_window_size, attention_mask)
+                mask = get_sparse_attn_mask_from_budget(attn, block_budget, attention_mask)
             elif sparsity_method == "threshold":
-                mask = get_sparse_attn_mask_from_threshold(attn, threshold, block_sliding_window_size, attention_mask)
+                mask = get_sparse_attn_mask_from_threshold(attn, threshold)
             mask[:, : ,-1] = True
-
+            
             return mask
         else:
             k_pooled = [pool_func(k, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
             k_pooled = torch.cat(k_pooled, dim=-1)        
-            k_compressed = self.mask_linear_k(k_pooled)
-            cos, sin = block_position_embeddings
-            if self.use_flash_rope:
-                k_compressed = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
-            else:
-                k_compressed = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
+            k_compressed = self.attngate_linear_k(k_pooled)
+            if self.use_qk_norm:
+                k_compressed = self.attngate_knorm(k_compressed)
+
+            if block_position_embeddings is not None:
+                cos, sin = block_position_embeddings
+                if self.use_flash_rope:
+                    k_compressed = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
+                else:
+                    k_compressed = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
             num_valid_blocks = max_cache_len // self.block_size
             num_remainder = max_cache_len % self.block_size
             if num_remainder > 0:
@@ -293,7 +265,7 @@ def _create_generic_attngate_class(base_class, suffix, k_pooling_names):
     class_name = f"K{''.join(k_pooling_names)}{suffix}"
 
     class NewAttnGate(base_class):
-        def __init__(self, block_size, model_hidden_size, gate_hidden_size, num_k_head, num_q_head, q_head_pooling_type, use_flash_rope=False):
+        def __init__(self, block_size, model_hidden_size, gate_hidden_size, num_k_head, num_q_head, q_head_pooling_type, use_flash_rope=False, use_qk_norm=False):
             super(NewAttnGate, self).__init__(
                 block_size=block_size,
                 model_hidden_size=model_hidden_size,
@@ -303,6 +275,7 @@ def _create_generic_attngate_class(base_class, suffix, k_pooling_names):
                 q_head_pooling_type=q_head_pooling_type,
                 k_pooling_funcs=k_pooling_funcs,
                 use_flash_rope=use_flash_rope,
+                use_qk_norm=use_qk_norm,
             )
     NewAttnGate.__name__ = class_name
     return class_name, NewAttnGate

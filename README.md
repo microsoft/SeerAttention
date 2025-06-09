@@ -29,6 +29,8 @@ Official implementation of **SeerAttention** - a novel trainable sparse attentio
 ## Hugging Face Models
 The current codebase is improved by only saving the distilled AttnGates' weights. During inference, you can composed the AttnGates and original base model. Check the latest huggingface repos!
 
+### Models for Sparse Prefilling
+
 | Base Model             | HF Link                                                                                                                                 | AttnGates Size |
 |------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|----------------|
 | Llama-3.1-8B-Instruct    | [SeerAttention/SeerAttention-Llama-3.1-8B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-Llama-3.1-8B-AttnGates)    | 101 MB       |
@@ -40,8 +42,14 @@ The current codebase is improved by only saving the distilled AttnGates' weights
 | deepseek-ai/DeepSeek-R1-Distill-Qwen-32B     | [SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-32B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-32B-AttnGates)        | 252 MB       |
 | deepseek-ai/DeepSeek-R1-Distill-Qwen-14B     | [SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-14B-Decode-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-DeepSeek-R1-Distill-Qwen-14B-Decode-AttnGates)        | 101 MB       |
 
+### Models for Sparse Decoding
 
-
+| Base Model             | HF Link                                                                                                                                 | AttnGates Size |
+|------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|----------------|
+| deepseek-ai/DeepSeek-R1-Distill-Qwen-14B     | [SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates)        | 101 MB       |
+| Qwen/Qwen3-4B     | [SeerAttention/SeerAttention-Decode-Qwen3-4B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-Decode-Qwen3-4B-AttnGates)        | 66.1 MB       |
+| Qwen/Qwen3-8B     | [SeerAttention/SeerAttention-Decode-Qwen3-8B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-Decode-Qwen3-8B-AttnGates)        | 66.1 MB       |
+| Qwen/Qwen3-14B    | [SeerAttention/SeerAttention-Decode-Qwen3-14B-AttnGates](https://huggingface.co/SeerAttention/SeerAttention-Decode-Qwen3-14B-AttnGates)        | 83.9 MB       |
 
 ## Quick Start
 
@@ -176,7 +184,7 @@ The code for fine-tuning with SeerAttention will be release soon.
 ## Evaluation
 For efficiency, we evaluate `block_sparse_attn` compared with full attention by FlashAttention-2. 
 
-![SeerAttention Kernel Efficiency](figures/efficiency.png)
+![SeerAttention Kernel Efficiency](figures/efficiency_prefill.png)
 
 
 For model accuracy, we evaluate SeerAttention on PG19, Ruler and LongBench. Please refer to `eval` folder for details. 
