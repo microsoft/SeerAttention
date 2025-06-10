@@ -51,4 +51,4 @@ For the RULER benchmark, we use Threshold based sparsity method. The threshold i
 
 ## Sparse Attention Kernel Efficiency
 
-![Efficiency](../figures/efficiency.png)
+![Efficiency](../figures/efficiency_prefill.png)
