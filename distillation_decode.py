@@ -43,7 +43,6 @@ class AttnGateTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
 
         torch.cuda.empty_cache()
-        step = self.state.global_step
         outputs = model(**inputs)
 
         original_loss = outputs.get("loss")
@@ -134,8 +133,9 @@ def apply_chat_template(
     prefix: str = "<think>\n",
 ) -> dict[str, str]:
 
-    ## when using vllm to generate data, the prompt uses 'add_generation_prompt'. So the \<think> token does not appear in the assistant.
-
+    ## When using vllm to generate data, the prompt uses 'add_generation_prompt'.
+    ## So the \<think> token does not appear in the assistant.
+    ## This is not necessary if use OPEN-R1-MATH-220K dataset directly
     messages = example["messages"]
     if add_prefix: 
         assert messages[1]["role"] == "assistant"
@@ -293,11 +293,7 @@ def train():
     else:
         add_prefix = True
         dataset = load_from_disk(training_args.dataset_name)
-        
-
-    if "phi" in model_args.model_name_or_path.lower():
-        add_prefix = False
-
+    
 
     dataset = dataset.map(
         apply_chat_template,

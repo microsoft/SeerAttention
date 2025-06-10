@@ -1,4 +1,4 @@
-model_dir="SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates"
+model_dir="SeerAttention/SeerAttention-Decode-Qwen3-4B-AttnGates"
 output_dir="./result_seer_sparse"
 attention_implementation="seer_sparse"
 max_tokens=32768

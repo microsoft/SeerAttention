@@ -4,6 +4,8 @@
 This math evaluation framework is modified from [LIMO](https://github.com/GAIR-NLP/LIMO/blob/main/eval). We tuned a very conservative batch size config for 80GB GPU memory, you can adjust it in parallel_run_hf.py
 
 ```bash
+
+## Run the script to reproduce results of Qwen3-4B. 
 bash scripts/eval_seer_sparse.sh 
 ```
 

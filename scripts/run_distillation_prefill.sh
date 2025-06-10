@@ -1,18 +1,18 @@
 ## Scripts to run AttnGate Distillation on Llama-3.1-8B-Instruct
 ## Estimated time: 5h for 8xA100 GPUs
 
-warmup_steps=${warmup_steps:-20}
-training_max_length=${training_max_length:-65536}
-lr=${lr:-1e-3}
-weight_decay=${weight_decay:-0.0}
-gate_type=${gate_type:-"Qavg_Kmaxminavg"}
-bs=${bs:-16}
-gpus=${gpus:-8}
-total_data=${total_data:-524288000}
-gate_loss_scale=${gate_loss_scale:-10.0}
+warmup_steps=${WARMUP_STEPS:-20}
+training_max_length=${TRAINING_MAX_LENGTH:-65536}
+lr=${LR:-1e-3}
+weight_decay=${WEIGHT_DECAY:-0.0}
+gate_type=${GATE_TYPE:-"Qavg_Kmaxminavg"}
+bs=${BS:-16}
+gpus=${GPUS:-8}
+total_data=${TOTAL_DATA:-524288000}
+gate_loss_scale=${GATE_LOSS_SCALE:-10.0}
 steps=$(($total_data /$training_max_length / $bs))
 gradient_accumulation_steps=$(($bs / $gpus))
-base_model=${base_model:-"meta-llama/Llama-3.1-8B-Instruct"}
+base_model=${BASE_MODEL:-"meta-llama/Llama-3.1-8B-Instruct"}
 run_name="${gate_type}_lr${lr}_maxlen${training_max_length}_warmup${warmup_steps}_bs${bs}_steps${steps}_gatelossscale${gate_loss_scale}"
 
 echo $run_name
