@@ -87,8 +87,8 @@ def main(batch=8,
         ref = ref_program_fa(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen,
                              max_num_blocks, block_size)
     torch.cuda.synchronize()
-    fa2_dense_time = (time.time() - start) / 100 * 1000
-    print("fa3 dense time: ", fa2_dense_time)
+    fa3_dense_time = (time.time() - start) / 100 * 1000
+    print("fa3 dense time: ", fa3_dense_time)
 
     for _ in range(10):
         block_sparse_flash_decode_gqa_indice_triton(
@@ -139,14 +139,14 @@ def main(batch=8,
 
     data_line = (
         f"{batch},{max_cache_seqlen},{sparse_ratio},"
-        f"{fa2_dense_time:.4f},{triton_sparse_time:.4f},{tilelang_sparse_time:.4f}\n"
+        f"{fa3_dense_time:.4f},{triton_sparse_time:.4f},{tilelang_sparse_time:.4f}\n"
     )
 
     with open(file_name, "a") as f:
-        # if os.path.getsize(file_name) == 0:
-        #     f.write(
-        #         "batch,max_cache_seqlen,sparse_ratio,fa2_dense_time,triton_sparse_time,tilelang_sparse_time\n"
-        #     )
+        if os.path.getsize(file_name) == 0:
+            f.write(
+                "batch,max_cache_seqlen,sparse_ratio,fa3_dense_time,triton_sparse_time,tilelang_sparse_time\n"
+            )
         f.write(data_line)
 
 
