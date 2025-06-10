@@ -21,6 +21,8 @@ python benchmark_sparse_attn.py --seq_len 131072 --sparsity 0.9 0.8 0.7 0.6 0.5
 
 Run the following commands to compare the efficiency among FlashAttention-V2 dense, Triton sparse and Tilelang sparse.
 ```bash
-pip install tilelang
+# install fa3 for H100/H800 GPUs
+git clone https://github.com/Dao-AILab/flash-attention.git
+cd flash-attention/hopper && python setup.py install && cd ../..
 bash decode_kernel_eval.sh
 ```

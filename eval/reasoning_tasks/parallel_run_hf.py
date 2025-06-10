@@ -14,7 +14,7 @@ def choose_task_config(model_size, output_dir):
             "aime24": {"bs": 15, "total_run": 64},
             "aime25": {"bs": 15, "total_run": 64},
             "math": {"bs": 75, "total_run": 8},
-            "gpqa": {"bs": 15, "total_run": 2},
+            "gpqa": {"bs": 30, "total_run": 16},
             "olympiadbench": {"bs": 15, "total_run": 8},
             "livecodebench": {"bs": 15, "total_run": 8},
         }
@@ -149,7 +149,7 @@ if __name__ == "__main__":
                         print(f"Launching run {current_run_id} on GPU {gpu_id}...")
                         
                         env = os.environ.copy()
-                        env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+                        # env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
                         cmd = [
                             "python", "eval_hf.py",
                             "--model_name_or_path", model_dir,

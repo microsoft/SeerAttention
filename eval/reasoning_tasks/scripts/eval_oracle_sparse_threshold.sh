@@ -6,7 +6,7 @@ num_gpus=8
 limit=-1
 
 # tasks="aime24,aime25,math,gpqa"
-tasks="math"
+tasks="aime24"
 
 block_size="16,32,64,128"
 sparsity_method="threshold"
