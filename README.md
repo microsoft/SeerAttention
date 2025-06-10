@@ -116,14 +116,14 @@ model = SeerAttnLlamaForCausalLM.from_pretrained(
 In the current self-distillation training setup, you can train the AttnGates for your own model. Here we give an example script for Llama-3.1-8B-Instruct. After the distillation process, the AttnGates' weights will be saved.
 
 ```bash
-## Run the scirpt to train SeerAttention-R Qwen3-4B decoding gate
+## Run the script to train SeerAttention-R Qwen3-4B decoding gate
 ## Replace BASE_MODEL to the pretrain model you want to train. 
 ## Currently only support Qwen2 and Qwen3 architecture. 
 ## You might need to change the default to chat_template to keep the tokens between <think> </think>. See `chat_template` for examples. 
 BASE_MODEL=Qwen/Qwen3-4B bash run_distillation_decode.sh
 
 
-## Run the scirpt to train llama-3.1-8b prefill gate
+## Run the script to train llama-3.1-8b prefill gate
 BASE_MODEL=meta-llama/Llama-3.1-8B-Instruct bash run_distillation_prefill.sh
 
 ```
