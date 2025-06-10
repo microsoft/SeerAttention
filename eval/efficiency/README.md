@@ -26,3 +26,4 @@ git clone https://github.com/Dao-AILab/flash-attention.git
 cd flash-attention/hopper && python setup.py install && cd ../..
 bash decode_kernel_eval.sh
 ```
+![SeerAttention-R Kernel Efficiency](../../figures/efficiency_decode.png)
