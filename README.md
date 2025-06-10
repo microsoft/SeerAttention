@@ -76,9 +76,10 @@ SeerAttention supports two sparse methods (Threshold / TopK) to convert a soft g
 from transformers import AutoTokenizer, AutoConfig
 from seer_attn import SeerAttnLlamaForCausalLM ## Sparse Prefill Modeling
 from seer_attn import SeerDecodingQwen3ForCausalLM ##  Sparse Decoding Modeling
+import torch
 
 ## SeerAttention-R: sparse decoding 
-model_name = "SeerAttention-Decode-Qwen3-4B-AttnGates"
+model_name = "SeerAttention/SeerAttention-Decode-Qwen3-4B-AttnGates"
 config = AutoConfig.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(
     config.base_model, 

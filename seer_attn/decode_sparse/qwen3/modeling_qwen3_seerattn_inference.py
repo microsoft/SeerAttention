@@ -477,7 +477,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
             if past_key_values is None:
                 past_key_values = DynamicCache()
             if k_compressed_cache is None:
-                k_compressed_cache = KCompressionCache(self.num_layers, self.config.seerattn_gate_block_size)
+                if past_key_values.get_seq_length() == 0:
+                    self.k_compressed_cache = KCompressionCache(self.num_layers, self.config.seerattn_gate_block_size)                
+                k_compressed_cache = self.k_compressed_cache
 
 
         if cache_position is None:
