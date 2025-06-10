@@ -117,22 +117,6 @@ def dense_flash_attention_forward(
     cache_seqlens: Optional[torch.Tensor] = None,
     **kwargs,
 ):
-    """
-    Calls the forward method of Flash Attention - if the input hidden states contain at least one padding token
-    first unpad the input, then computes the attention scores and pad the final attention scores.
-
-    Args:
-        query_states (`torch.Tensor`):
-            Input query states to be passed to Flash Attention API
-        key_states (`torch.Tensor`):
-            Input key states to be passed to Flash Attention API
-        value_states (`torch.Tensor`):
-            Input value states to be passed to Flash Attention API
-        attention_mask (`torch.Tensor`, *optional*):
-            The padding mask - corresponds to a tensor of size `(batch_size, seq_len)` where 0 stands for the
-            position of padding tokens and 1 for the position of non-padding tokens.
-
-    """
 
     if query_length > 1:
         # assert attention_mask is not None, "Attention mask must be provided for Flash Attention."

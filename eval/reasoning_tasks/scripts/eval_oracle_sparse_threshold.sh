@@ -1,21 +1,19 @@
 model_dir="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
 output_dir="./result_oracle_sparse"
-model_size="14B"
 attention_implementation="oracle_sparse"
 max_tokens=32768
 num_gpus=8
 limit=-1
 
-# tasks="aime,math,gpqa,olympiadbench"
-tasks="math"
+# tasks="aime24,aime25,math,gpqa"
+tasks="aime24"
 
 block_size="16,32,64,128"
 sparsity_method="threshold"
-threshold="5e-4,1e-3,5e-3,1e-2"
+threshold="1e-4,5e-4,1e-3"
 
 python parallel_run_hf.py \
       --model_dir "$model_dir" \
-      --model_size "$model_size" \
       --tasks "$tasks" \
       --output_dir "$output_dir" \
       --attention_implementation "$attention_implementation" \

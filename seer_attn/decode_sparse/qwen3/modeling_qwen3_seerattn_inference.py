@@ -31,7 +31,7 @@ from transformers.utils import (
 )
 from .configuration_qwen3_seerattn import SeerAttnQwen3Config
 from ...utils import BaseModelOutputWithPastAndCache, CausalLMOutputWithPastAndCache
-from ..attn_gate_inf import ATTNGATE_CLASSES
+from ..attn_gate_inf import ATTNGATE_CLASSES, compute_oracle_sparse_mask
 import copy, math, os
 from einops import rearrange
 from ..attention_forward_sparse import sparse_flash_attention_forward
@@ -139,6 +139,7 @@ class Qwen3SeerAttention(nn.Module):
         self.seerattn_implementation = config.seerattn_implementation
         self.seerattn_output_sparsity = config.seerattn_output_sparsity
         self.block_budget = config.seerattn_token_budget // config.seerattn_gate_block_size
+        self.block_sliding_window_size = config.seerattn_sliding_window_size // config.seerattn_gate_block_size
         self.seerattn_start_layer = config.seerattn_start_layer
 
 
@@ -188,20 +189,32 @@ class Qwen3SeerAttention(nn.Module):
             k = rearrange(k, '... (h d) -> ... h d', d=self.head_dim)
             v = rearrange(v, '... (h d) -> ... h d', d=self.head_dim)
 
-        if self.seerattn_implementation != "seer_dense":
-            block_sparse_mask = self.attn_gate(
-                k_nope,
-                self.layer_idx,
-                k_compressed_cache,
-                q_nope,
-                block_attention_mask,
-                max_cache_len=k.shape[1],
-                position_embeddings=position_embeddings_gate_q,
-                block_position_embeddings=block_position_embeddings,
-                threshold=self.config.seerattn_threshold,
-                block_budget=self.block_budget,
-                sparsity_method=self.config.seerattn_sparsity_method,
-            )
+        if self.seerattn_implementation != "seer_dense" or self.layer_idx < self.seerattn_start_layer:
+            if self.seerattn_implementation == "seer_sparse":
+                block_sparse_mask = self.attn_gate(
+                    k_nope,
+                    self.layer_idx,
+                    k_compressed_cache,
+                    q_nope,
+                    block_attention_mask,
+                    max_cache_len=k.shape[1],
+                    position_embeddings=position_embeddings_gate_q,
+                    block_position_embeddings=block_position_embeddings,
+                    threshold=self.config.seerattn_threshold,
+                    block_budget=self.block_budget,
+                    sparsity_method=self.config.seerattn_sparsity_method,
+                )
+            else:
+                block_sparse_mask = compute_oracle_sparse_mask(
+                    q,
+                    k,
+                    cache_seqlens,
+                    block_attention_mask,
+                    self.config.seerattn_gate_block_size,
+                    self.config.seerattn_sparsity_method,
+                    self.config.seerattn_threshold,
+                    self.block_budget,
+                )
 
         activate_and_original_block_count = None
         if self.seerattn_output_sparsity and q_len == 1 and self.layer_idx >= self.seerattn_start_layer:

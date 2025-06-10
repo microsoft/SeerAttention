@@ -18,3 +18,4 @@ timeout-decorator
 latex2sympy2
 triton==3.0.0
 psutil
+tilelang

@@ -248,37 +248,5 @@ def get_indice(maxseq, cu_seqlen):
     indices = batch_idx * maxseq + seq_pos
     return indices
 
-def compute_oracle_sparse_mask(q, k, attention_mask, block_size, threshold):
-    batch_size, q_len, num_q_heads, head_dim = q.shape
-    _, kv_len, num_kv_heads, _ = k.shape
-    num_gqa_groups = num_q_heads // num_kv_heads
-    
-    if q_len > 1: # use dense prefill for sparse decode
-        block_sparse_mask = None
-    else:
-        q = q.transpose(1, 2) # (b, num_q_heads, q_len, d)
-        k = k.transpose(1, 2) # (b, num_kv_heads, kv_len, d)
 
-        # Repeat K heads for GQA compatibility
-        if num_gqa_groups > 1:
-            k = repeat_kv(k, num_gqa_groups)
-
-        attn_weights = torch.einsum('bhid, bhdj -> bhij', q, k.transpose(-1, -2)) * (head_dim**-0.5) # (b, num_q_heads, q_len, kv_len)
-
-        #q_len=1, (b, num_q_heads, q_len, kv_len) -> (b, num_q_heads, kv_len), as block_sparse_mask must in bhs
-        attn_weights = attn_weights.squeeze(2)
-        
-        #from 2D to 3D, (b,kv_len) -> (b,1,kv_len)
-        attention_mask=attention_mask.unsqueeze(1)
-        # note attention_mask is in int/float, with 1 means True.
-        # our block attention_mask is in bool.
-        attn_weights = attn_weights.masked_fill(~attention_mask.bool(), float('-inf'))
-        
-        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
-
-        attn_weights = F.max_pool2d(attn_weights, kernel_size=(num_gqa_groups, block_size), stride=(num_gqa_groups, block_size), ceil_mode=True)
-
-        block_sparse_mask = attn_weights > threshold  
-    
-    return block_sparse_mask
 

@@ -90,7 +90,7 @@ def batch_exist_generate(
         if active_local.sum().item() < cur_to_orig.shape[0]:
             active_indices_local = torch.nonzero(active_local, as_tuple=False).squeeze(-1)
             # Update the kv cache using indices relative to the current cache.
-            print("active_indices_local", active_indices_local, "kvlen:", attention_mask.shape[1])
+            print("active batch index", active_indices_local, "kvlen:", attention_mask.shape[1])
             current_cache.batch_select_indices(active_indices_local)
         
             if attention_mask is not None:
