@@ -3,7 +3,7 @@
 [![arXiv](https://img.shields.io/badge/arXiv-2410.13276-b31b1b.svg)](https://arxiv.org/abs/2410.13276)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-![SeerAttention Architecture](figures/seerattention-r.png)
+![SeerAttention Architecture](assets/seerattention-r.png)
 
 
 Official implementation of **SeerAttention** and **SeerAttention-R** - a novel trainable sparse attention mechanism that learns intrinsic sparsity patterns directly from LLMs through self-distillation at post-training time. Achieves faster inference while maintaining accuracy for long-context prefill and decoding (long-reasoning).
