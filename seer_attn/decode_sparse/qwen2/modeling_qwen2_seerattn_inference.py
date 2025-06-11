@@ -147,7 +147,7 @@ class Qwen2SeerAttention(nn.Module):
             k = rearrange(k, '... (h d) -> ... h d', d=self.head_dim)
             v = rearrange(v, '... (h d) -> ... h d', d=self.head_dim)
 
-        if self.seerattn_implementation != "seer_dense" or self.layer_idx < self.seerattn_start_layer:
+        if self.seerattn_implementation != "seer_dense":
             if self.seerattn_implementation == "seer_sparse":
                 block_sparse_mask = self.attn_gate(
                     k_nope,
@@ -180,7 +180,7 @@ class Qwen2SeerAttention(nn.Module):
             original_block_count = block_attention_mask.sum() * self.config.num_key_value_heads # block_attention_mask in shape [batch, 1, seq(block)]
             activate_and_original_block_count = (activate_block_count.item(), original_block_count.item())
 
-        if self.config.seerattn_implementation == "seer_dense":
+        if self.config.seerattn_implementation == "seer_dense" or self.layer_idx < self.seerattn_start_layer:
             attn_output = dense_flash_attention_forward(
                 q,
                 k,

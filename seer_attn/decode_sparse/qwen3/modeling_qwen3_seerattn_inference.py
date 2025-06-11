@@ -189,7 +189,7 @@ class Qwen3SeerAttention(nn.Module):
             k = rearrange(k, '... (h d) -> ... h d', d=self.head_dim)
             v = rearrange(v, '... (h d) -> ... h d', d=self.head_dim)
 
-        if self.seerattn_implementation != "seer_dense" or self.layer_idx < self.seerattn_start_layer:
+        if self.seerattn_implementation != "seer_dense":
             if self.seerattn_implementation == "seer_sparse":
                 block_sparse_mask = self.attn_gate(
                     k_nope,
