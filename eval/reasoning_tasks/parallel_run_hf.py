@@ -13,7 +13,7 @@ def choose_task_config(model_size, output_dir):
         task_config = {
             "aime24": {"bs": 15, "total_run": 64},
             "aime25": {"bs": 15, "total_run": 64},
-            "math": {"bs": 75, "total_run": 1},
+            "math": {"bs": 75, "total_run": 8},
             "gpqa": {"bs": 30, "total_run": 16},
             "olympiadbench": {"bs": 15, "total_run": 8},
             "livecodebench": {"bs": 15, "total_run": 8},
