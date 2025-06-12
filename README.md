@@ -1,12 +1,11 @@
 # SeerAttention: Learning Intrinsic Sparse Attention in Your LLMs
 
-[![arXiv](https://img.shields.io/badge/arXiv-2410.13276-b31b1b.svg)](https://arxiv.org/abs/2410.13276)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ![SeerAttention Architecture](assets/seerattention-r.png)
 
 
-Official implementation of **SeerAttention** and **SeerAttention-R** - a novel trainable sparse attention mechanism that learns intrinsic sparsity patterns directly from LLMs through self-distillation at post-training time. Achieves faster inference while maintaining accuracy for long-context prefill and decoding (long-reasoning).
+Official implementation of [SeerAttention](https://arxiv.org/abs/2410.13276) and [SeerAttention-R](https://arxiv.org/abs/2506.08889) - a novel trainable sparse attention mechanism that learns intrinsic sparsity patterns directly from LLMs through self-distillation at post-training time. Achieves faster inference while maintaining accuracy for long-context prefill and decoding (long-reasoning).
 
 ## Key Features
 **Trainable Sparse Attention** - Outperform static/predefined attention sparsity    
@@ -139,6 +138,13 @@ If you find SeerAttention useful or want to use in your projects, please kindly 
     author={Gao, Yizhao and Zeng, Zhichen and Du, Dayou and Cao, Shijie and So, Hayden Kwok-Hay and Cao, Ting and Yang, Fan and Yang, Mao},
     journal={arXiv preprint arXiv:2410.13276},
     year={2024}
+}
+
+@article{gao2025seerattentionr,
+    title={SeerAttention-R: Sparse Attention Adaptation for Long Reasoning},
+    author={Gao, Yizhao and Guo, Shuming and Cao, Shijie and and Xia, Yuqing, and Wang, Lei, and Ma, Lingxiao, and Sun, Yutao, and Ye, Tianzhu, and Dong, Li, and So, Hayden Kwok-Hay and Hua, Yu, and Cao, Ting and Yang, Fan and Yang, Mao},
+    journal={arXiv preprint arXiv:2506.08889},
+    year={2025}
 }
 
 ```
