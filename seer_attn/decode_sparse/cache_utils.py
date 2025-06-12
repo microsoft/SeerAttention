@@ -1,13 +1,5 @@
-import copy
-import importlib.metadata
-import json
-import os
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
-import time
-from collections import deque
 import torch
-import math
 
 from transformers.cache_utils import Cache
 
@@ -53,7 +45,7 @@ class KCompressionCache(Cache):
                 self.k_compressed[layer_idx] = k_compressed
                 bsz = k_compressed.shape[0]
                 self.k_remainder[layer_idx] = torch.zeros(
-                    [bsz, self.block_size, k_compressed.shape[2], k_remainder.shape[3]], device=k_compressed.device, dtype=k_compressed.dtype)
+                    [bsz, self.block_size, k_compressed.shape[2], k_compressed.shape[3]], device=k_compressed.device, dtype=k_compressed.dtype)
                 if k_remainder is not None:        
                     self.k_remainder[layer_idx][:, :k_remainder.shape[1],] = k_remainder
                 
