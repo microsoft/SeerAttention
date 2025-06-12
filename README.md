@@ -27,7 +27,7 @@ Official implementation of [SeerAttention](https://arxiv.org/abs/2410.13276) and
 
 
 ## Hugging Face Models
-The current codebase is improved by only saving the distilled AttnGates' weights. During inference, you can composed the AttnGates and original base model. Check the latest huggingface repos!
+The current codebase is improved by only saving the distilled AttnGates' weights. During inference, you can composed the AttnGates and original base model. 
 
 ### SeerAttention-R: AttnGate for Sparse Decoding
 
