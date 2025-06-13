@@ -96,7 +96,7 @@ setup(
             "block_sparse_seer_attn.egg-info",
         )
     ),
-    author="Peiyuan Zhou, Zhichen Zeng",
+    author="Peiyuan Zhou, Zhichen Zeng, Jianying Zhu",
     description="Block Sparse Attention mechanism implement by CUTCLASS",
     ext_modules=ext_modules,
     cmdclass={ "build_ext": BuildExtension},
