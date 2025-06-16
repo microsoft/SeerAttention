@@ -111,7 +111,7 @@ def get_sparsity_list(sampling_steps, seqlen, causal):
 warmup = 10
 epoch = 10
 
-BS, SEQLEN, DIM = 4, 4096, 64
+BS, SEQLEN, DIM = 4, 4090, 64
 HEAD_Q = 32
 HEAD_KV = 4 # 32
 block_size = 64
@@ -140,12 +140,15 @@ def main():
     my_varlen_flash_attn_output, *_ = my_varlen_flash_attn(q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, is_causal, sm_scale)
     # my_varlen_flash_attn_time = run_benchmark(epoch, warmup, my_varlen_flash_attn, q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, is_causal, sm_scale)  
     assert torch.allclose(flash_attn_output, my_varlen_flash_attn_output, rtol=0, atol=1e-2)
+    print("Pass dense attention test")
 
     # CHECK correctness, use sparsity 0.0
     base_blockmask, real_sparsity = generate_base_sparsity_mask(SEQLEN, SEQLEN, block_size, block_size, block_size, 0.0, is_causal, device='cuda')
     base_blockmask = base_blockmask.unsqueeze(0).repeat(BS, HEAD_Q, 1, 1)
     out, _ = varlen_block_sparse_attention(q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, base_blockmask, max_seqlen_q, max_seqlen_k, is_causal, sm_scale)
     assert torch.allclose(flash_attn_output, out, rtol=0, atol=1e-2) 
+    print("Passed sparse correctness check with sparsity 0.0")
+
 
 if __name__ == "__main__":
     main()

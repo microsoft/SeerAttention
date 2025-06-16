@@ -10,6 +10,7 @@ import numpy as np
 
 import triton
 import triton.language as tl
+from flash_attn import flash_attn_varlen_func as flash_attn_func_offical
 
 import os
 
@@ -697,6 +698,20 @@ if __name__ == "__main__":
     # cd SeerAttention/seer_attn/kernels/varlen/
     # python3 block_sparse_attn_varlen_2d.py
 
+    import argparse
+    parser = argparse.ArgumentParser(description="Block-sparse VarLen 2D Attention")
+    parser.add_argument("--bs",          type=int,   default=4,    help="batch size")
+    parser.add_argument("--seqlen",      type=int,   default=4096, help="sequence length")
+    parser.add_argument("--dim",         type=int,   default=64,   help="head dimension")
+    parser.add_argument("--head_q",      type=int,   default=32,   help="number of Q heads")
+    parser.add_argument("--head_kv",     type=int,   default=4,    help="number of KV heads")
+    parser.add_argument("--block_size",  type=int,   default=64,   help="block size")
+    parser.add_argument("--sparsity",    type=float, default=0.0,  help="sparsity ratio")
+    parser.add_argument("--sm_scale",    type=float, default=None, help="softmax scale; if unset uses 1/sqrt(dim)")
+    args = parser.parse_args()
+
+
+
     from einops import rearrange
     from block_sparse_seer_attn import varlen_block_sparse_attention
     def get_tensors(bs, seq_len, num_heads_q, num_heads_kv, head_dim, dtype=torch.float16):
@@ -778,11 +793,17 @@ if __name__ == "__main__":
         real_sparsity = 1.0 - calculated_block_num / total_block_num
         return base_mask, real_sparsity
 
-    BS, SEQLEN, DIM = 4, 4096, 64
-    HEAD_Q = 32
-    HEAD_KV = 4
+    BS, SEQLEN, DIM = args.bs, args.seqlen, args.dim
+    HEAD_Q = args.head_q
+    HEAD_KV = args.head_kv
+    block_size = args.block_size
+    sparsity = args.sparsity
+    if args.sm_scale is None:
+        sm_scale = 1.0 / math.sqrt(DIM)
+    else:
+        sm_scale = args.sm_scale
 
-    sm_scale = 1.0 # 1 / math.sqrt(DIM)
+
     is_causal = True
     device = 'cuda'
     dtype = torch.float16
@@ -799,12 +820,14 @@ if __name__ == "__main__":
         max_seqlen_k,
     ) = generate_qkv(q, k, v)
 
-    block_size = 64
-    sparsity = 0.2
+
     # CHECK correctness
     base_blockmask, real_sparsity = generate_base_sparsity_mask(SEQLEN, SEQLEN, block_size, block_size, block_size, sparsity, is_causal, device='cuda')
     base_blockmask = base_blockmask.unsqueeze(0).repeat(BS, HEAD_Q, 1, 1)
     cuda_out, _ = varlen_block_sparse_attention(q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, base_blockmask, max_seqlen_q, max_seqlen_k, is_causal, sm_scale)
+    
+    if sparsity == 0.0:
+        flash_attn_output = flash_attn_func_offical(q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal=is_causal, softmax_scale=sm_scale)
 
     # q, k, v shapes: [t, num_heads, head_dim]
     # block_mask shapes: [bsz, num_heads, ceil(t/B), ceil(t/B)]
@@ -819,5 +842,9 @@ if __name__ == "__main__":
         base_blockmask,
         block_size,            
     )
+    if sparsity == 0.0:
+        assert torch.allclose(triton_output, flash_attn_output, rtol=0, atol=1e-2)
+        print("Triton output matches Flash Attention output for dense case.")
 
     assert torch.allclose(triton_output, cuda_out, rtol=0, atol=1e-2) 
+    print("Triton output matches CUDA output for sparse case.")

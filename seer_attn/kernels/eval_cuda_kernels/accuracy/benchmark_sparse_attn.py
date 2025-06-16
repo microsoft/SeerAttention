@@ -69,7 +69,7 @@ def get_sparsity_list(sampling_steps, seqlen, causal):
 warmup = 10
 epoch = 10
 
-BS, SEQLEN, DIM = 4, 4096, 64
+BS, SEQLEN, DIM = 4, 4095, 64
 HEAD_Q = 32
 # HEAD_KV = 4
 HEAD_KV = 32
@@ -102,6 +102,7 @@ def main():
     base_blockmask = base_blockmask.unsqueeze(0).repeat(BS, HEAD_Q, 1, 1)
     out, _ = block_sparse_attention(q, k, v, base_blockmask, is_causal, sm_scale) 
     assert torch.allclose(flash_attn_output, out, rtol=1e-2, atol=1e-2)   
+    print("Passed correctness check with sparsity 0.0")
     # assert torch.allclose(baseline, flash_attn_output, rtol=0, atol=1e-2)   
     # assert torch.allclose(baseline, out, rtol=0, atol=1e-2) 
 
