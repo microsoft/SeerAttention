@@ -1,6 +1,7 @@
 import torch
 from block_sparse_seer_attn_cutclass import flash_attention_v2_cutlass, varlen_flash_attention_v2_cutlass
 from block_sparse_seer_attn_cutclass import flash_attention_block_v2_cutlass, varlen_flash_attention_block_v2_cutlass
+
 def convert_blockmask_row_reverse(blockmask, causal=True, kM=64, kN=64):
     M, N = blockmask.shape[-2], blockmask.shape[-1]
     # TO be added: support arbitrary block size
@@ -39,3 +40,4 @@ def block_sparse_attention(q, k, v, mask, is_causal=True, sm_scale=1.0):
 def varlen_block_sparse_attention(q, k, v, cu_seqlens_q, cu_seqlens_k, mask, max_seqlen_q, max_seqlen_k, causal=True, softmax_scale=1.0):
     row_mask = convert_blockmask_row_reverse(mask, causal)
     return varlen_flash_attention_block_v2_cutlass(q, k, v, cu_seqlens_q, cu_seqlens_k, row_mask, max_seqlen_q, max_seqlen_k, causal, softmax_scale)
+

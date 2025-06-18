@@ -1,4 +1,4 @@
-# cd eval/efficiency
+# cd eval_cuda_kernels/efficiency
 # python3 benchmark_varlen_sparse_attn.py
 
 '''
