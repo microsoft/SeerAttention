@@ -15,70 +15,124 @@
 #include "kernel_traits.h"
 #include "flash.h"
 #include "utils.h"
+#include "block_info.h"
 
 namespace flash {
 
 using namespace cute;
 
-template <int kBlockM, int kBlockN, int kNWarps,typename Engine, typename Layout>
-inline __device__ void mask_within_nblock(Tensor<Engine, Layout> &tensor, const int m_block, const int nbi) {
-    // tensor has shape (nrow=(2, MMA_M), ncol=(2, MMA_N))
+// // bool Is_causal, bool Is_even_MN, 
+// template <int kBlockM, int kBlockN, int kNWarps,typename Engine, typename Layout>
+// inline __device__ void mask_within_nblock(Tensor<Engine, Layout> &tensor, const int m_block, const int nbi) {
+//     // tensor has shape (nrow=(2, MMA_M), ncol=(2, MMA_N))
+//     static_assert(Layout::rank == 2, "Only support 2D Tensor");
+//     // NOTE:
+//     // Determining the index within an MMA is also a challenge
+//     // (nrow=(2, MMA_M), ncol=(2, MMA_N)) looks like:
+//     //    T1.V0 T1.V1
+//     //    T1.V0 T1.V1
+//     // Determine col and row values based on the mma_tile diagram
+
+//     // NOTE:
+//     // Calculate the processing range of the thread, mask out the parts beyond the range
+//     //
+//     // NOTE:
+//     // % 32 means grouping by 32, because the maximum thread id in SM80_16x8x16_F32F16F16F32_TN _1_2_1 is 32
+//     // (lane_id % 4) * 2 indicates which "color" col(thread) it is in, *2 is to align to the right (i.e., which value2 is being processed)
+//     // Therefore, col_idx_offset represents which column in the 4 columns of the single Atom the current thread is processing
+
+//     // lane_id represents a "thread group" in an MMA tile
+//     const int lane_id = threadIdx.x % 32;
+//     const int col_idx_offset = kBlockN * nbi + (lane_id % 4) * 2;
+
+//     const int nrow_group = threadIdx.x / 32;
+//     const int row_idx_offset = kBlockM * m_block + lane_id / 4 + nrow_group * 16 /* 2*8 */;
+//     // (2, nrow), 2*8 for each
+//     const int group_stride = kNWarps * 16;
+
+//     #pragma unroll
+//     for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
+//         // In SM80_16x8x16_F32F16F16F32_TN, a group of 4 threads processes 8 values in a row
+//         const int col_idx_base = col_idx_offset + nj * 8;
+//         #pragma unroll
+//         for (int j = 0; j < size<1, 0>(tensor); ++j) {
+//             // j is used to calculate the col for value 1 and value 2
+//             // col_idx ultimately represents the column number of the value being processed by the current thread
+//             const int col_idx = col_idx_base + j;
+
+//             // Mask out the parts of the scores (result after QK) that are beyond the range
+//             // Compare column and row numbers
+
+//             // Without the "make_coord" we get wrong results
+//             // for nrow(2, MMA_M)
+//             #pragma unroll
+//             for (int mi = 0; mi < size<0, 0>(tensor); ++mi) {
+
+//               #pragma unroll
+//               for (int mj = 0; mj < size<0, 1>(tensor); ++mj) {
+//                 const int row_idx = row_idx_offset + mi * 8 + mj * group_stride;
+//                 if (col_idx > row_idx) {
+//                   tensor(make_coord(mi, mj), make_coord(j, nj)) = -INFINITY;
+//                 }
+//               }
+
+//             }
+
+//         }
+//     }
+// }
+
+template <
+    int kBlockM, int kBlockN, int kNWarps,
+    bool Is_causal, bool Is_even_MN,
+    typename Engine, typename Layout
+>
+inline __device__ void mask_within_nblock(
+    Tensor<Engine, Layout> &tensor,
+    const int m_block, const int nbi,
+    const int max_seqlen_k = -1  // 仅当 Is_even_MN=false 时需要
+) {
     static_assert(Layout::rank == 2, "Only support 2D Tensor");
-    // NOTE:
-    // Determining the index within an MMA is also a challenge
-    // (nrow=(2, MMA_M), ncol=(2, MMA_N)) looks like:
-    //    T1.V0 T1.V1
-    //    T1.V0 T1.V1
-    // Determine col and row values based on the mma_tile diagram
+    static constexpr bool Need_masking = Is_causal || !Is_even_MN;
+    if constexpr (Need_masking) {
+        const int lane_id = threadIdx.x % 32;
+        const int col_idx_offset = kBlockN * nbi + (lane_id % 4) * 2;
+        const int nrow_group = threadIdx.x / 32;
+        const int row_idx_offset = kBlockM * m_block + lane_id / 4 + nrow_group * 16;
+        const int group_stride = kNWarps * 16;
 
-    // NOTE:
-    // Calculate the processing range of the thread, mask out the parts beyond the range
-    //
-    // NOTE:
-    // % 32 means grouping by 32, because the maximum thread id in SM80_16x8x16_F32F16F16F32_TN _1_2_1 is 32
-    // (lane_id % 4) * 2 indicates which "color" col(thread) it is in, *2 is to align to the right (i.e., which value2 is being processed)
-    // Therefore, col_idx_offset represents which column in the 4 columns of the single Atom the current thread is processing
-
-    // lane_id represents a "thread group" in an MMA tile
-    const int lane_id = threadIdx.x % 32;
-    const int col_idx_offset = kBlockN * nbi + (lane_id % 4) * 2;
-
-    const int nrow_group = threadIdx.x / 32;
-    const int row_idx_offset = kBlockM * m_block + lane_id / 4 + nrow_group * 16 /* 2*8 */;
-    // (2, nrow), 2*8 for each
-    const int group_stride = kNWarps * 16;
-
-    #pragma unroll
-    for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
-        // In SM80_16x8x16_F32F16F16F32_TN, a group of 4 threads processes 8 values in a row
-        const int col_idx_base = col_idx_offset + nj * 8;
         #pragma unroll
-        for (int j = 0; j < size<1, 0>(tensor); ++j) {
-            // j is used to calculate the col for value 1 and value 2
-            // col_idx ultimately represents the column number of the value being processed by the current thread
-            const int col_idx = col_idx_base + j;
-
-            // Mask out the parts of the scores (result after QK) that are beyond the range
-            // Compare column and row numbers
-
-            // Without the "make_coord" we get wrong results
-            // for nrow(2, MMA_M)
+        for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
+            const int col_idx_base = col_idx_offset + nj * 8;
             #pragma unroll
-            for (int mi = 0; mi < size<0, 0>(tensor); ++mi) {
-
-              #pragma unroll
-              for (int mj = 0; mj < size<0, 1>(tensor); ++mj) {
-                const int row_idx = row_idx_offset + mi * 8 + mj * group_stride;
-                if (col_idx > row_idx) {
-                  tensor(make_coord(mi, mj), make_coord(j, nj)) = -INFINITY;
+            for (int j = 0; j < size<1, 0>(tensor); ++j) {
+                const int col_idx = col_idx_base + j;
+                #pragma unroll
+                for (int mi = 0; mi < size<0, 0>(tensor); ++mi) {
+                    #pragma unroll
+                    for (int mj = 0; mj < size<0, 1>(tensor); ++mj) {
+                        const int row_idx = row_idx_offset + mi * 8 + mj * group_stride;
+                        // Causal mask
+                        if constexpr (Is_causal) {
+                            if (col_idx > row_idx) {
+                                tensor(make_coord(mi, mj), make_coord(j, nj)) = -INFINITY;
+                                continue;
+                            }
+                        }
+                        // Padding mask (for uneven MN)
+                        if constexpr (!Is_even_MN) {
+                            if (col_idx >= max_seqlen_k) {
+                                tensor(make_coord(mi, mj), make_coord(j, nj)) = -INFINITY;
+                            }
+                        }
+                    }
                 }
-              }
-
             }
-
         }
     }
 }
+
+
 
 // NOTE: GEMM encapsulation with matrix A already in registers
 template<typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3,
@@ -146,23 +200,26 @@ void cp_async_wait() {
 
 // copy from S to D with tiled_copy
 // TODO: Need to support skipping copy in causal mode
-template <typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1>
+template <bool Is_even_MN=true, bool Is_even_K=true,
+          typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
+          typename Engine2, typename Layout2, typename Engine3, typename Layout3>
 inline __device__ void copy(TiledCopy tiled_copy, Tensor<Engine0, Layout0> const &S,
-                            Tensor<Engine1, Layout1> &D) {
+                            Tensor<Engine1, Layout1> &D, Tensor<Engine2, Layout2> const &identity_MN,
+                            Tensor<Engine3, Layout3> const &predicate_K, const int max_MN=0) {
     CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});
     CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});
     CUTE_STATIC_ASSERT_V(size<0>(S) == size<0>(D));                     // MMA
     CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));                     // MMA_M
     CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));                     // MMA_K
-
     #pragma unroll
     for (int m = 0; m < size<1>(S); ++m) {
-        // TODO: In the original version, identity_MN is used to skip large blocks, predicate is used to skip copying within the block
-        // TODO: Add predicate logic to skip unnecessary copying
-        // if (get<0>(identity_MN(0, m, 0)) < max_MN)
-        #pragma unroll
-        for (int k = 0; k < size<2>(S); ++k) {
-          cute::copy(tiled_copy, S(_, m, k), D(_, m, k));
+        if (Is_even_MN || get<0>(identity_MN(0, m, 0)) < max_MN) {
+            #pragma unroll
+            for (int k = 0; k < size<2>(S); ++k) {
+                if (Is_even_K || predicate_K(k)) {
+                    cute::copy(tiled_copy, S(_, m, k), D(_, m, k));
+                }
+            }
         }
     }
 }
@@ -314,46 +371,91 @@ inline __device__ void softmax_rescale_o(Tensor0 &scores, Tensor1 &scores_max, T
 } // namespace flash
 
 void set_params_fprop(Flash_fwd_params &params,
-
+                      const size_t b,
+                      const size_t seqlen_q,
+                      const size_t seqlen_k,
+                      const size_t seqlen_q_rounded,
+                      const size_t seqlen_k_rounded,
+                      const size_t h,
+                      const size_t h_k,
+                      const size_t d,
+                      const size_t d_rounded,
                       // device pointers
-                      const torch::Tensor q,
-                      const torch::Tensor k,
-                      const torch::Tensor v,
-                      torch::Tensor out,
-
+                      const at::Tensor q,
+                      const at::Tensor k,
+                      const at::Tensor v,
+                      at::Tensor out,
+                      void *cu_seqlens_q_d,
+                      void *cu_seqlens_k_d,
+                      void *seqused_k,
                       void *softmax_lse_d,
                       float softmax_scale,
                       bool is_causal) {
 
   memset(&params, 0, sizeof(params));
 
-  params.bs = q.size(0);
-  params.head = q.size(1);
-  params.q_seqlen = q.size(2);
-  params.dim = q.size(3);
+  params.b = b;
+  params.h = h;
+  params.h_k = h_k;
+  params.h_h_k_ratio = h / h_k;
+  params.seqlen_q = seqlen_q;
+  params.seqlen_k = seqlen_k;
+  params.seqlen_q_rounded = seqlen_q_rounded;
+  params.seqlen_k_rounded = seqlen_k_rounded;
+  params.d = d;
+  params.d_rounded = d_rounded;
+  
+  // params.bs = q.size(0);
+  // params.head = q.size(1);
+  // params.q_seqlen = q.size(2);
+  // params.dim = q.size(3);
 
-  params.k_head = k.size(1);
-  params.k_seqlen = k.size(2);
+  // params.k_head = k.size(1);
+  // params.k_seqlen = k.size(2);
 
-  params.bs_stride = q.stride(0);
-  params.head_stride = q.stride(1);
-  params.seqlen_stride = q.stride(2);
-  params.dim_stride = q.stride(3);
+  // params.bs_stride = q.stride(0);
+  // params.head_stride = q.stride(1);
+  // params.seqlen_stride = q.stride(2);
+  // params.dim_stride = q.stride(3);
 
-  params.softmax_scale = softmax_scale;
+  params.scale_softmax = softmax_scale;
   // TODO: Use log2 for scaling
-  params.softmax_scale_log2 = softmax_scale * M_LOG2E;
+  params.scale_softmax_log2 = softmax_scale * M_LOG2E;
   params.is_causal = is_causal;
   params.is_bf16 = q.dtype() == torch::kBFloat16;
 
   // LogSumExp save for backward
   params.softmax_lse_ptr = softmax_lse_d;
 
-  // TODO: get ptr
   params.q_ptr = q.data_ptr();
   params.k_ptr = k.data_ptr();
   params.v_ptr = v.data_ptr();
-  params.out_ptr = out.data_ptr();
+  params.o_ptr = out.data_ptr();
+
+  params.q_row_stride = q.stride(-3);
+  params.k_row_stride = k.stride(-3);
+  params.v_row_stride = v.stride(-3);
+  params.o_row_stride = out.stride(-3);
+
+  params.q_head_stride = q.stride(-2);
+  params.k_head_stride = k.stride(-2);
+  params.v_head_stride = v.stride(-2);
+  params.o_head_stride = out.stride(-2);      
+
+  if (cu_seqlens_q_d == nullptr) {
+      params.q_batch_stride = q.stride(0);
+      params.k_batch_stride = k.stride(0);
+      params.v_batch_stride = v.stride(0);
+      params.o_batch_stride = out.stride(0);
+  }
+
+  params.cu_seqlens_q = static_cast<int *>(cu_seqlens_q_d);
+  params.cu_seqlens_k = static_cast<int *>(cu_seqlens_k_d);  
+  params.seqused_k = static_cast<int *>(seqused_k);
+
+  params.is_causal = is_causal;
+
+  params.is_seqlens_k_cumulative = true;
 }
 
 
@@ -366,16 +468,17 @@ struct SharedStorage {
   cute::array_aligned<ElementType, cute::cosize_v<SmemLayoutV>> smem_v;
 };
 
-template <typename Kernel_traits, bool Is_causal=false, typename Params>
+template <typename Kernel_traits, bool Is_causal=false, bool Is_even_MN, bool Is_even_K, typename Params>
 __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
 
   using namespace cute;
 
-  // m block index
   const int m_block = blockIdx.x;
+  // The block index for the batch.
+  const int bidb = blockIdx.y;
+  // The block index for the head.
+  const int bidh = blockIdx.z;
 
-  // bs * head
-  const int base_id = blockIdx.y;
   // The thread index.
   const int tidx = threadIdx.x;
 
@@ -397,47 +500,55 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
   constexpr int kBlockN = Kernel_traits::kBlockN;
   constexpr int kHeadDim = Kernel_traits::kHeadDim;
 
+  const flash::BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
+  if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
+
+  const int n_block_min = 0;
+  int n_block_max = cute::ceil_div(binfo.actual_seqlen_k, kBlockN);
+  if (Is_causal) {
+      n_block_max = std::min(n_block_max,
+                             cute::ceil_div((m_block + 1) * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q, kBlockN));
+  }
+
   // Shared memory.
   extern __shared__ char smem_[];
   using SharedStorage = SharedStorage<Element, SmemLayoutQ, SmemLayoutK, SmemLayoutV>;
   SharedStorage &shared_storage = *reinterpret_cast<SharedStorage *>(smem_);
 
-  const int bs_head_offset = base_id * params.head_stride;
+  // const int bs_head_offset = base_id * params.head_stride;
+
+  const index_t row_offset_o = binfo.q_offset(params.o_batch_stride, params.o_row_stride, bidb)
+      + m_block * kBlockM * params.o_row_stride + bidh * params.o_head_stride;
+  const index_t row_offset_lse = (bidb * params.h + bidh) * params.seqlen_q + m_block * kBlockM;
+  const index_t row_offset_q = binfo.q_offset(params.q_batch_stride, params.q_row_stride, bidb)
+      + m_block * kBlockM * params.q_row_stride + bidh * params.q_head_stride;
+  // We move K and V to the last block.
+  const index_t row_offset_k = binfo.k_offset(params.k_batch_stride, params.k_row_stride, bidb)
+      + (n_block_max - 1) * kBlockN * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride;
+  const index_t row_offset_v = binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb)
+      + (n_block_max - 1) * kBlockN * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride;
+
+  // if (m_block == 0 && bidb == 0 && bidh == 0){
+  //   printf("[calculate mask_ptr 1]: bidb %d, params.q_batch_stride:%" PRId64 ", bidh %d, params.q_head_stride:%" PRId64 ", n_block_max %d  \n", bidb, params.q_batch_stride, bidh, params.q_head_stride, n_block_max);
+  // }
 
   // TODO: base offset for MHA
   // NOTE: convert C pointer to Tensor for convenience
-  Tensor Q = make_tensor(
-      make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + bs_head_offset),
-      make_shape(params.q_seqlen, Int<kHeadDim>{}),
-      make_stride(Int<kHeadDim>{}, Int<1>{}));
-  Tensor K = make_tensor(
-      make_gmem_ptr(reinterpret_cast<Element *>(params.k_ptr) + bs_head_offset),
-      make_shape(params.k_seqlen, Int<kHeadDim>{}),
-      make_stride(Int<kHeadDim>{}, Int<1>{}));
-  Tensor V = make_tensor(
-      make_gmem_ptr(reinterpret_cast<Element *>(params.v_ptr) + bs_head_offset),
-      make_shape(params.k_seqlen, Int<kHeadDim>{}),
-      make_stride(Int<kHeadDim>{}, Int<1>{}));
-  Tensor O = make_tensor(
-      make_gmem_ptr(reinterpret_cast<Element *>(params.out_ptr) + bs_head_offset),
-      make_shape(params.q_seqlen, Int<kHeadDim>{}),
-      make_stride(Int<kHeadDim>{}, Int<1>{}));
+  Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + row_offset_q),
+                            Shape<Int<kBlockM>, Int<kHeadDim>>{},
+                            make_stride(params.q_row_stride, _1{}));
+  Tensor gK = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.k_ptr) + row_offset_k),
+                            Shape<Int<kBlockN>, Int<kHeadDim>>{},
+                            make_stride(params.k_row_stride, _1{}));
+  Tensor gV = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.v_ptr) + row_offset_v),
+                            Shape<Int<kBlockN>, Int<kHeadDim>>{},
+                            make_stride(params.v_row_stride, _1{}));
+  // Tensor gO = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.o_ptr) + row_offset_o),
+  //                               Shape<Int<kBlockM>, Int<kHeadDim>>{},
+  //                               make_stride(params.o_row_stride, _1{}));
   // TODO:
-  Tensor LSE = make_tensor(
-      make_gmem_ptr(reinterpret_cast<ElementAccum *>(params.softmax_lse_ptr) + base_id * params.q_seqlen),
-      // Shape<Int<kBlockM>, Stride<_1>{}>{}, 
-      make_shape(params.q_seqlen),
-      make_stride(Int<1>{}));
-
-
-  // Load Q, K, V blocks
-  // (kBlockM, kHeadDim, num_tile_n)
-  Tensor gQ = local_tile(Q, make_tile(Int<kBlockM>{}, Int<kHeadDim>{}), make_coord(m_block, _));
-
-  // (kBlockN, kHeadDim, num_tile_n)
-  // NOTE: Loading pipeline, initial load of required K, V
-  Tensor gK = local_tile(K, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(0, _));
-  Tensor gV = local_tile(V, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(0, _));
+  // Tensor gLSE = make_tensor(make_gmem_ptr(reinterpret_cast<ElementAccum *>(params.softmax_lse_ptr) + row_offset_lse),
+  //                                 Shape<Int<kBlockM>>{}, Stride<_1>{});
 
   // Get MMA abstraction
   TiledMMA tiled_mma;
@@ -458,11 +569,11 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
   auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
 
   // NOTE: Define src, dst for gmem -> smem copy
-  Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ(_, _, 0));
+  Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
   Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
-  Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+  Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);
   Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
-  Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
+  Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);
   Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
 
 
@@ -493,15 +604,38 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
   auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
   Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
 
+  Tensor rAccOut = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});
+  
+    // Construct identity layout for sQ and sK
+    Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));    // (BLK_N,BLK_K) -> (blk_n,blk_k)
+
+    // Repeat the partitioning with identity layouts
+    Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);       // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
+    Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);   // (BCPY,BCPY_N,BCPY_K) -> (blk_n,blk_k)
+
+    // Allocate predicate tensors for k
+    Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
+    Tensor tKVpKV = make_tensor<bool>(make_shape(size<2>(tKsK)));
+
+    // Set predicates for k bounds
+    if (!Is_even_K) {
+        #pragma unroll
+        for (int k = 0; k < size(tQpQ); ++k) { tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d; }
+        #pragma unroll
+        for (int k = 0; k < size(tKVpKV); ++k) { tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d; }
+    }
+
   // Pipeline loading initial Q, K
   // Load Q to smem
-  flash::copy(gmem_tiled_copy_QKV, tQgQ, tQsQ);
+  // flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ);
+  flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ,
+                                       binfo.actual_seqlen_q - m_block * kBlockM);  
   // Load K to smem
-  flash::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+  flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV,
+                                       binfo.actual_seqlen_k - (n_block_max - 1) * kBlockN);
   // Start async copy
   cute::cp_async_fence();
-
-  Tensor rAccOut = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});
 
   // step1: slice-k compute QK block
   // Q[BLOCK_M, BLOCK_N] @ K[BLOCK_M, BLOCK_N].T = O[BLOCK_M, BLOCK_M]
@@ -510,11 +644,11 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
   // advance K, V
 
   // NOTE: Number of K, V blocks: processing range
-  const int n_block_min = 0;
+  // const int n_block_min = 0;
   // NOTE: 1. mask between N BLOCKs if is causal mode
   int seqlen_start = m_block * kBlockM;
   int seqlen_end = (m_block + 1) * kBlockM;
-  int n_block_max = Is_causal ? cute::ceil_div(seqlen_end, kBlockN) : cute::ceil_div(params.k_seqlen, kBlockN);
+  // int n_block_max = Is_causal ? cute::ceil_div(seqlen_end, kBlockN) : cute::ceil_div(params.k_seqlen, kBlockN);
 
   // NOTE: Max to be recorded
   Tensor scores_max = make_tensor<ElementAccum>(Shape<Int<2 * size<1>(rAccOut)>>{});
@@ -523,7 +657,7 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
 
   clear(rAccOut);
 
-  for (int nbi = n_block_min; nbi < n_block_max; nbi++) {
+  for (int nbi = n_block_max-1; nbi >= n_block_min; nbi--) {
     auto rAccScore = partition_fragment_C(tiled_mma, make_shape(Int<kBlockM>{}, Int<kBlockN>{}));
 
     clear(rAccScore);
@@ -534,13 +668,25 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
     __syncthreads();
 
     // Asynchronously load V while doing gemm
-    gV = local_tile(V, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(nbi, _));
-    tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
+    // gV = local_tile(V, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(nbi, _));
+    // tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));    
+    // tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));      
+    if (nbi < n_block_max - 1) {    
+      // tVgV.data() = tVgV.data() - int(kBlockN * params.v_row_stride);    
+      tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
+    }
+
     // Asynchronously load V to smem
-    flash::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
+    if (nbi == n_block_max - 1) {
+      flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV,
+                                       binfo.actual_seqlen_k - nbi * kBlockN);
+    }
+    else if (nbi < n_block_max - 1) {
+      flash::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV);
+    }
+
     // Initiate async copy
     cute::cp_async_fence();
-
 
     // O = Q@K.T
     // NOTE: Load data from smem into registers before performing GEMM, **retile during loading**
@@ -551,8 +697,10 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
     Tensor scores = make_tensor(rAccScore.data(), flash::convert_layout_acc_rowcol(rAccScore.layout()));
 
     // NOTE: 2. Mask within N BLOCKs
-    if (Is_causal ==  true && nbi * kBlockN >= seqlen_start) {
-      flash::mask_within_nblock<kBlockM, kBlockN, kNWarps>(scores, m_block, nbi);
+    if (Is_causal == true && nbi * kBlockN >= seqlen_start) {
+      // flash::mask_within_nblock<kBlockM, kBlockN, kNWarps>(scores, m_block, nbi);
+      int max_seqlen_k_value = Is_even_MN ? -1 : params.seqlen_k;
+      flash::mask_within_nblock<kBlockM, kBlockN, kNWarps, Is_causal, Is_even_MN>(scores, m_block, nbi, max_seqlen_k_value);
     }
 
     // NOTE: Wait for V to finish loading, prepare the initial state for the next K load
@@ -560,17 +708,19 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
     __syncthreads();
 
     // Advance K
-    if (nbi != n_block_max - 1) {
-      gK = local_tile(K, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(nbi + 1, _));
-      tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
-      flash::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+    if (nbi > n_block_min) {
+      // gK = local_tile(K, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(nbi + 1, _));
+      // tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+      tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));     
+      // flash::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+      flash::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
       cute::cp_async_fence();
     }
 
     // Compute softmax
     // NOTE: rAccOut records all numerators after softmax
-    nbi == 0 ? flash::softmax_rescale_o</*Is_first=*/true>(scores, scores_max, scores_sum, rAccOut, params.softmax_scale) :
-      flash::softmax_rescale_o</*Is_first=*/false>(scores, scores_max, scores_sum, rAccOut, params.softmax_scale);
+    nbi == n_block_max-1 ? flash::softmax_rescale_o</*Is_first=*/true>(scores, scores_max, scores_sum, rAccOut, params.scale_softmax) :
+      flash::softmax_rescale_o</*Is_first=*/false>(scores, scores_max, scores_sum, rAccOut, params.scale_softmax);
 
     // Perform QK @ V computation
     // (score AKA rAccScore): QK[M, N] @ V[N, dim]
@@ -598,7 +748,7 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
     float inv_sum = (sum == 0.f || sum != sum) ? 1.f : 1.f / sum;
     // Compute lse
     // NOTE: Here we use max * scale
-    lse(mi) = (sum == 0.f || sum != sum) ? INFINITY : scores_max(mi) * params.softmax_scale + __logf(sum);
+    lse(mi) = (sum == 0.f || sum != sum) ? INFINITY : scores_max(mi) * params.scale_softmax + __logf(sum);
     float scale = inv_sum;
     // For col
     #pragma unroll
@@ -622,13 +772,14 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
   // NOTE: Copy to smem first
   cute::copy(smem_tiled_copy_O, taccOrO, taccOsO);
 
-  Tensor gO = local_tile(O, make_tile(Int<kBlockM>{}, Int<kHeadDim>{}), make_coord(m_block, _));
-
+  Tensor gO = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.o_ptr) + row_offset_o),
+                                Shape<Int<kBlockM>, Int<kHeadDim>>{},
+                                make_stride(params.o_row_stride, _1{}));
   // Create copy from smem -> gmem
   typename Kernel_traits::GmemTiledCopyO gmem_tiled_copy_O;
   auto gmem_thr_copy_O = gmem_tiled_copy_O.get_thread_slice(tidx);
   Tensor tOsO = gmem_thr_copy_O.partition_S(sO);        // ((Atom,AtomNum),ATOM_M,ATOM_N)
-  Tensor tOgO = gmem_thr_copy_O.partition_D(gO(_, _, 0));
+  Tensor tOgO = gmem_thr_copy_O.partition_D(gO);
 
   __syncthreads();
 
@@ -637,11 +788,24 @@ __global__ void flash_attention_v2_cutlass_kernel(const Params params) {
   // TODO: Review the purpose of these two copies
   Tensor tOrO = make_tensor<Element>(shape(tOgO));
   cute::copy(gmem_tiled_copy_O, tOsO, tOrO);
-
-  flash::copy(gmem_tiled_copy_O, tOrO, tOgO);
+  // flash::copy(gmem_tiled_copy_O, tOrO, tOgO);
+    // Construct identity layout for sO
+    Tensor cO = make_identity_tensor(make_shape(size<0>(sO), size<1>(sO)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    // Repeat the partitioning with identity layouts
+    Tensor tOcO = gmem_thr_copy_O.partition_D(cO);                           // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
+    Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgO)));
+    if (!Is_even_K) {
+        #pragma unroll
+        for (int k = 0; k < size(tOpO); ++k) { tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d; }
+    }
+    // Clear_OOB_K must be false since we don't want to write zeros to gmem
+    flash::copy<Is_even_MN, Is_even_K>(
+        gmem_tiled_copy_O, tOrO, tOgO, tOcO, tOpO, binfo.actual_seqlen_q - m_block * kBlockM
+    );
 
   // NOTE: Write back lse
-  Tensor gLSE = local_tile(LSE, make_tile(Int<kBlockM>{}), make_coord(m_block));
+  Tensor gLSE = make_tensor(make_gmem_ptr(reinterpret_cast<ElementAccum *>(params.softmax_lse_ptr) + row_offset_lse),
+                            Shape<Int<kBlockM>>{}, Stride<_1>{});  
   Tensor caccO = make_identity_tensor(Shape<Int<kBlockM>, Int<kHeadDim>>{});    // (BLK_M,BLK_K) -> (blk_m,blk_k)
   Tensor taccOcO = thr_mma.partition_C(caccO);                           // (MMA,MMA_M,MMA_K)
   static_assert(decltype(size<0>(taccOcO))::value == 4);
@@ -668,21 +832,27 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
   using SmemLayoutV = typename Kernel_traits::SmemLayoutKV;
 
   const int num_m_block =
-      (params.q_seqlen + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;
+      (params.seqlen_q + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;
 
-  dim3 grid(num_m_block, params.bs * params.head, 1);
+  // dim3 grid(num_m_block, params.bs * params.head, 1);
+  dim3 grid(num_m_block, params.b, params.h);  
   dim3 block(Kernel_traits::kNThreads);
+
+  const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;
+  const bool is_even_K = params.d == Kernel_traits::kHeadDim;
 
   int smem_size = int(sizeof(SharedStorage<Element, SmemLayoutQ, SmemLayoutK, SmemLayoutV>));
 
-  auto kernel = &flash_attention_v2_cutlass_kernel<Kernel_traits, Is_causal, Flash_fwd_params>;
-  if (smem_size >= 48 * 1024) {
-      CUDA_ERROR_CHECK(cudaFuncSetAttribute(
-          kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-  }
-
-  // TODO: stream
-  kernel<<<grid, block, smem_size>>>(params);
+  BOOL_SWITCH(is_even_MN, IsEvenMNConst, [&] {
+    EVENK_SWITCH(is_even_K, IsEvenKConst, [&] {
+        auto kernel = &flash_attention_v2_cutlass_kernel<Kernel_traits, Is_causal, IsEvenMNConst, IsEvenKConst, Flash_fwd_params>;
+        if (smem_size >= 48 * 1024) {
+            CUDA_ERROR_CHECK(cudaFuncSetAttribute(
+                kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+        }      
+        kernel<<<grid, block, smem_size>>>(params);
+    });
+  });
 }
 
 template<typename T, int Headdim>
@@ -703,56 +873,122 @@ void run_flash_attn_cutlass(Flash_fwd_params &params, cudaStream_t stream) {
     // FP16_SWITCH yields elem_type namespace
     FP16_SWITCH(!params.is_bf16, [&] {
         // FWD_HEADDIM_SWITCH yields kHeadDim constexpr
-        FWD_HEADDIM_SWITCH(params.dim, [&] {
+        FWD_HEADDIM_SWITCH(params.d, [&] {
             run_flash_fwd_<elem_type, kHeadDim>(params, stream);
         });
     });
 }
 
 std::vector<torch::Tensor> flash_attention_v2_cutlass(torch::Tensor q, torch::Tensor k,
-                                      torch::Tensor v, bool is_causal = false, float softmax_scale=1) {
+  torch::Tensor v, bool is_causal = false, float softmax_scale=1) {
 
-  CHECK_INPUT(q);
-  CHECK_INPUT(k);
-  CHECK_INPUT(v);
+CHECK_INPUT(q);
+CHECK_INPUT(k);
+CHECK_INPUT(v);
 
-  // Batch size
-  int bs = q.size(0);
-  // Number of heads
-  int head = q.size(1);
-  // Sequence length
-  int seqlen = q.size(2);
-  // Dimension
-  int dim = q.size(3);
-  auto out = torch::empty_like(q);
+const auto sizes = q.sizes();
+const int batch_size = sizes[0];
+int seqlen_q = sizes[1];
+int num_heads = sizes[2];
+const int head_size_og = sizes[3];
+const int seqlen_k = k.size(1);
+const int num_heads_k = k.size(2);  
+auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
+const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
+const int seqlen_k_rounded = round_multiple(seqlen_k, 128);  
+const int head_size = round_multiple(head_size_og, 8);
+const int head_size_rounded = round_multiple(head_size, 32);    
 
-  auto opts = q.options();
-  auto softmax_lse = torch::empty({bs, head, seqlen}, opts.dtype(torch::kFloat32));
+auto out = torch::empty_like(q);
+auto opts = q.options();
+auto softmax_lse = torch::empty({batch_size, num_heads, seqlen_q}, opts.dtype(torch::kFloat32));
 
-  Flash_fwd_params params;
-  set_params_fprop(params, q, k, v, out,
-      softmax_lse.data_ptr(), softmax_scale, is_causal);
+Flash_fwd_params params;
+set_params_fprop(params,
+                batch_size,
+                seqlen_q, seqlen_k,
+                seqlen_q_rounded, seqlen_k_rounded,
+                num_heads, num_heads_k,
+                head_size, head_size_rounded,
+                q, k, v, out,
+                /*cu_seqlens_q_d=*/nullptr,
+                /*cu_seqlens_k_d=*/nullptr,
+                /*seqused_k=*/nullptr,
+                softmax_lse.data_ptr(),
+                softmax_scale,
+                is_causal);
 
-  run_flash_attn_cutlass(params, 0);
+run_flash_attn_cutlass(params, 0);
 
-  // Wait until kernel finishes.
-  cudaDeviceSynchronize();
-  CUDA_ERROR_CHECK(cudaGetLastError());
+// Wait until kernel finishes.
+cudaDeviceSynchronize();
+CUDA_ERROR_CHECK(cudaGetLastError());
 
-  return {out, softmax_lse};
+return {out, softmax_lse};
 }
 
+std::vector<torch::Tensor> varlen_flash_attention_v2_cutlass(torch::Tensor q, torch::Tensor k,
+  torch::Tensor v, torch::Tensor cu_seqlens_q, torch::Tensor cu_seqlens_k, int max_seqlen_q, int max_seqlen_k, bool is_causal = false, float softmax_scale=1) {
 
-template <typename Kernel_traits, bool Is_causal=false, typename Params, int maskM=64, int maskN=64>
+CHECK_INPUT(q);
+CHECK_INPUT(k);
+CHECK_INPUT(v);
+
+CHECK_INPUT(cu_seqlens_q);
+CHECK_INPUT(cu_seqlens_k);
+
+const auto sizes = q.sizes();
+const int total_q = sizes[0];
+const int batch_size = cu_seqlens_q.numel() - 1;
+const int num_heads = sizes[1];
+const int head_size_og = sizes[2];
+const int total_k = k.size(0);
+const int num_heads_k = k.size(1);
+auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
+const int head_size = round_multiple(head_size_og, 8);
+const int head_size_rounded = round_multiple(head_size, 32);
+const int seqlen_q_rounded = round_multiple(max_seqlen_q, 128);
+const int seqlen_k_rounded = round_multiple(max_seqlen_k, 128);  
+
+auto out = torch::empty_like(q);
+auto opts = q.options();
+auto softmax_lse = torch::empty({batch_size, num_heads, max_seqlen_q}, opts.dtype(at::kFloat));
+
+Flash_fwd_params params;
+set_params_fprop(params,
+                batch_size,
+                max_seqlen_q, max_seqlen_k,
+                seqlen_q_rounded, seqlen_k_rounded,
+                num_heads, num_heads_k,
+                head_size, head_size_rounded,
+                q, k, v, out,
+                cu_seqlens_q.data_ptr(),
+                cu_seqlens_k.data_ptr(),
+                /*seqused_k=*/nullptr,
+                softmax_lse.data_ptr(),
+                softmax_scale,
+                is_causal);
+
+run_flash_attn_cutlass(params, 0);
+
+// Wait until kernel finishes.
+cudaDeviceSynchronize();
+CUDA_ERROR_CHECK(cudaGetLastError());
+
+return {out, softmax_lse};
+}
+
+template <typename Kernel_traits, bool Is_causal=false, bool Is_even_MN, bool Is_even_K, typename Params, int maskM=64, int maskN=64>
 __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
 
   using namespace cute;
 
-  // M block index
   const int m_block = blockIdx.x;
+  // The block index for the batch.
+  const int bidb = blockIdx.y;
+  // The block index for the head.
+  const int bidh = blockIdx.z;
 
-  // Batch size * head
-  const int base_id = blockIdx.y;
   // The thread index.
   const int tidx = threadIdx.x;
 
@@ -774,28 +1010,81 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
   constexpr int kBlockN = Kernel_traits::kBlockN;
   constexpr int kHeadDim = Kernel_traits::kHeadDim;
 
+  const flash::BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
+  if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
+
+  const int n_block_min = 0;
+  int n_block_max = cute::ceil_div(binfo.actual_seqlen_k, kBlockN);
+  if (Is_causal) {
+      n_block_max = std::min(n_block_max,
+                             cute::ceil_div((m_block + 1) * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q, kBlockN));
+  }
+
   // Shared memory.
   extern __shared__ char smem_[];
   using SharedStorage = SharedStorage<Element, SmemLayoutQ, SmemLayoutK, SmemLayoutV>;
   SharedStorage &shared_storage = *reinterpret_cast<SharedStorage *>(smem_);
 
-  const int bs_head_offset = base_id * params.head_stride;
   // TODO: Add assert
   const int row_factor = maskM / kBlockM;
   const int col_factor = maskN / kBlockN;
+  // if (m_block == 2 && bidb == 2 && bidh == 2){
+  //   printf("maskM: %d\n", maskM); // 64 64 1
+  //   printf("kBlockM: %d\n", kBlockM); // 64 64 1
+  //   printf("rol_factor: %d\n", row_factor); // 64 64 1    
+  //   printf("maskM, kBlockM, rol_factor: %d %d %d\n", maskM, kBlockM, row_factor); // 64 64 1
+  //   printf("maskN, kBlockN, col_factor: %d %d %d\n", maskN, kBlockN, col_factor); // 64 64 1
+  // }
   const int m_mask = m_block / row_factor;
-  const int num_n_mask = cute::ceil_div(params.k_seqlen, maskN);
-  const int num_n_block = cute::ceil_div(params.k_seqlen, kBlockN);
+  // printf("m_block, row_factor, m_mask: %d %d %d\n", m_block, row_factor, m_mask);  // x 1 x
+  const int num_n_mask = cute::ceil_div(params.seqlen_k, maskN);
+  // printf("params.seqlen_k, maskN, num_n_mask: %d  %d  %d\n", params.seqlen_k, maskN, num_n_mask);  // 512  64  8
+  // const int num_n_block = cute::ceil_div(params.seqlen_k, kBlockN);
+  const int num_n_block = cute::ceil_div(binfo.actual_seqlen_k, kBlockN);  
 
   // Add mask start pointer
-   // int *blockmask_ptr = params.block_mask_ptr + (batch_idx * params.num_blocksparse_heads + mask_type - 1) * int(params.seqlen_q_rounded / m_block_dim) * int(params.seqlen_k_rounded / n_block_dim) + int(loop_step_idx / row_factor) * int(params.seqlen_k_rounded / n_block_dim);
-  int *mask_ptr = params.block_mask_ptr + base_id * params.mask_head_stride + m_mask * num_n_mask;
+  // int *blockmask_ptr = params.block_mask_ptr + (batch_idx * params.num_blocksparse_heads + mask_type - 1) * int(params.seqlen_q_rounded / m_block_dim) * int(params.seqlen_k_rounded / n_block_dim) + int(loop_step_idx / row_factor) * int(params.seqlen_k_rounded / n_block_dim);
+  // int *mask_ptr = params.block_mask_ptr + base_id * params.mask_head_stride + m_mask * num_n_mask;
+  // 
+  // mask: [params.b, params.h (num_q_heads), cute::ceil_div(params.seqlen_q, maskM) (ceil(maxlen_q/block)), cute::ceil_div(params.seqlen_k, maskN) (ceil(maxlen_k/block))]
+  // q:  b, sq, h, d
+  // k, v: b, sk, h_k, d
+  // mask: b, h, sq / 64, sk / 64
+  int *mask_ptr = params.block_mask_ptr + bidb * params.mask_batch_stride + bidh * params.mask_head_stride + m_mask * num_n_mask; 
+  // if (m_block == 7 && bidb == 0 && bidh == 0){
+  //   printf("[calculate mask_ptr 1]: bidb %d, params.q_batch_stride:%" PRId64 ", bidh %d, params.q_head_stride:%" PRId64 ", n_block_max %d, m_mask %d, num_n_mask %d  \n", bidb, params.q_batch_stride, bidh, params.q_head_stride, n_block_max, m_mask, num_n_mask);
+  //   printf("[calculate mask_ptr 2]: mask_ptr-params.block_mask_ptr: %d  \n", mask_ptr-params.block_mask_ptr);        
+  //   printf("[calculate mask_ptr 3]: params.mask_batch_stride:%" PRId64 ", params.mask_head_stride:%" PRId64 ", m_mask %d, num_n_mask %d  \n", params.mask_batch_stride, params.mask_head_stride, m_mask, num_n_mask);    
+  // }
   int mask_id = 0, nbi = mask_ptr[0] * col_factor;
-//   printf("----------------------%d %d %d %d\n", m_block, num_n_block, nbi, mask_ptr[num_n_block - 1]);
-//   for (int i = 0; i <  num_n_block; i++) {
-//     printf("%d   ", mask_ptr[i]);
-//   }
-//   printf("\n");
+  int nbi_prev = nbi;
+  // if (m_block == 2 && bidb == 2 && bidh == 2){
+  //   printf("initialize nbi: mask_id %d, nbi %d, nbi_prev %d  \n", mask_id, nbi, nbi_prev); 
+  //   printf("m_mask %d \n", m_mask);
+  // }  
+  
+
+  // const int bs_head_offset = base_id * params.q_head_stride;
+  const index_t row_offset_o = binfo.q_offset(params.o_batch_stride, params.o_row_stride, bidb)
+      + m_block * kBlockM * params.o_row_stride + bidh * params.o_head_stride;
+  const index_t row_offset_lse = (bidb * params.h + bidh) * params.seqlen_q + m_block * kBlockM;
+  const index_t row_offset_q = binfo.q_offset(params.q_batch_stride, params.q_row_stride, bidb)
+      + m_block * kBlockM * params.q_row_stride + bidh * params.q_head_stride;
+  // We move K and V to the last block.
+  const index_t row_offset_k = binfo.k_offset(params.k_batch_stride, params.k_row_stride, bidb)
+      + (n_block_min + nbi) * kBlockN * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride;
+  const index_t row_offset_v = binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb)
+      + (n_block_min + nbi) * kBlockN * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride;
+
+  // if (m_block == 0) {
+  // printf("----------------------%d %d %d %d\n", m_block, num_n_block, nbi, mask_ptr[num_n_block - 1]);
+  // printf("mask_ptr as follows: \n");
+  // for (int i = 0; i <  num_n_block; i++) {
+  //   printf("%d   ", mask_ptr[i]);
+  //   if (mask_ptr[i] < -1 || mask_ptr[i] > num_n_mask) printf("\n Error mask_ptr[i] %d, ", mask_ptr[i]);
+  // }
+  // printf("\n");
+  // }
 
   // Empty line
   if (nbi < 0) {
@@ -804,37 +1093,15 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
 
   // TODO: Base offset for MHA
   // NOTE: Convert C pointer to Tensor for convenience
-  Tensor Q = make_tensor(
-      make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + bs_head_offset),
-      make_shape(params.q_seqlen, Int<kHeadDim>{}),
-      make_stride(Int<kHeadDim>{}, Int<1>{}));
-  Tensor K = make_tensor(
-      make_gmem_ptr(reinterpret_cast<Element *>(params.k_ptr) + bs_head_offset),
-      make_shape(params.k_seqlen, Int<kHeadDim>{}),
-      make_stride(Int<kHeadDim>{}, Int<1>{}));
-  Tensor V = make_tensor(
-      make_gmem_ptr(reinterpret_cast<Element *>(params.v_ptr) + bs_head_offset),
-      make_shape(params.k_seqlen, Int<kHeadDim>{}),
-      make_stride(Int<kHeadDim>{}, Int<1>{}));
-  Tensor O = make_tensor(
-      make_gmem_ptr(reinterpret_cast<Element *>(params.out_ptr) + bs_head_offset),
-      make_shape(params.q_seqlen, Int<kHeadDim>{}),
-      make_stride(Int<kHeadDim>{}, Int<1>{}));
-  // TODO:
-  Tensor LSE = make_tensor(
-      make_gmem_ptr(reinterpret_cast<ElementAccum *>(params.softmax_lse_ptr) + base_id * params.q_seqlen),
-      // Shape<Int<kBlockM>, Stride<_1>{}>{}, 
-      make_shape(params.q_seqlen),
-      make_stride(Int<1>{}));
-
-  // Load Q, K, V blocks
-  // (kBlockM, kHeadDim, num_tile_n)
-  Tensor gQ = local_tile(Q, make_tile(Int<kBlockM>{}, Int<kHeadDim>{}), make_coord(m_block, _));
-
-  // (kBlockN, kHeadDim, num_tile_n)
-  // NOTE: Loading pipeline, initial loading of K and V
-  Tensor gK = local_tile(K, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(nbi, _));
-  Tensor gV = local_tile(V, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(nbi, _));
+  Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + row_offset_q),
+                            Shape<Int<kBlockM>, Int<kHeadDim>>{},
+                            make_stride(params.q_row_stride, _1{}));
+  Tensor gK = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.k_ptr) + row_offset_k),
+                            Shape<Int<kBlockN>, Int<kHeadDim>>{},
+                            make_stride(params.k_row_stride, _1{}));
+  Tensor gV = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.v_ptr) + row_offset_v),
+                            Shape<Int<kBlockN>, Int<kHeadDim>>{},
+                            make_stride(params.v_row_stride, _1{}));
 
   // Get MMA abstraction
   TiledMMA tiled_mma;
@@ -855,11 +1122,11 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
   auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
 
   // NOTE: Define gmem -> smem copy src, dst
-  Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ(_, _, 0));
+  Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
   Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
-  Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+  Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);
   Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
-  Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
+  Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);
   Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
 
   // NOTE: Define smem -> reg copy dst
@@ -889,11 +1156,42 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
   auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
   Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
 
+    // Construct identity layout for sQ and sK
+    Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));    // (BLK_N,BLK_K) -> (blk_n,blk_k)
+
+    // Repeat the partitioning with identity layouts
+    Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);       // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
+    Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);   // (BCPY,BCPY_N,BCPY_K) -> (blk_n,blk_k)
+
+    // Allocate predicate tensors for k
+    Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
+    Tensor tKVpKV = make_tensor<bool>(make_shape(size<2>(tKsK)));
+
+    // Set predicates for k bounds
+    if (!Is_even_K) {
+        #pragma unroll
+        for (int k = 0; k < size(tQpQ); ++k) { tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d; }
+        #pragma unroll
+        for (int k = 0; k < size(tKVpKV); ++k) { tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d; }
+    }
+
   // Pipeline load initial Q, K
-  // Load Q to smem
-  flash::copy(gmem_tiled_copy_QKV, tQgQ, tQsQ);
-  // Load K to smem
-  flash::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+  // // Load Q to smem
+  // flash::copy(gmem_tiled_copy_QKV, tQgQ, tQsQ);
+  // // Load K to smem
+  // flash::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+  if (nbi == n_block_max - 1) {
+    flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ,
+                                       binfo.actual_seqlen_q - m_block * kBlockM);  
+    // Load K to smem
+    flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV,
+                                       binfo.actual_seqlen_k - nbi * kBlockN);
+  }
+  else {
+    flash::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ);
+    flash::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
+  }
   // Start asynchronous copy
   cute::cp_async_fence();
 
@@ -906,11 +1204,9 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
   // advance K, V
 
   // NOTE: Number of K, V blocks: processing range
-  const int n_block_min = 0;
   // NOTE: 1. mask between N BLOCKs if in causal mode
   int seqlen_start = m_block * kBlockM;
   int seqlen_end = (m_block + 1) * kBlockM;
-  int n_block_max = Is_causal ? cute::ceil_div(seqlen_end, kBlockN) : cute::ceil_div(params.k_seqlen, kBlockN);
 
   // NOTE: Maximum values to record
   Tensor scores_max = make_tensor<ElementAccum>(Shape<Int<2 * size<1>(rAccOut)>>{});
@@ -931,10 +1227,20 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
     __syncthreads();
 
     // Asynchronous loading of V during GEMM
-    gV = local_tile(V, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(nbi, _));
-    tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
-    // Asynchronously load V into smem
-    flash::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
+    if (mask_id > 0) {   // nbi > nbi_start
+      // printf("advance V: mask_id %d, nbi %d, nbi_prev %d  \n", mask_id, nbi, nbi_prev); 
+      // if (nbi < -1 || nbi > num_n_mask) printf("error advance V: mask_id %d, nbi %d, nbi_prev %d  \n", mask_id, nbi, nbi_prev);
+      tVgV.data() = tVgV.data() + (nbi - nbi_prev) * int(kBlockN * params.v_row_stride);    
+    }    
+    if (nbi == n_block_max - 1) {
+      flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - nbi * kBlockN);
+    }    
+    else if (nbi < n_block_max - 1) {
+      flash::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV);
+    }
+
+    // // Asynchronously load V into smem
+    // flash::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
     // Initiate asynchronous copy
     cute::cp_async_fence();
 
@@ -947,8 +1253,10 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
     Tensor scores = make_tensor(rAccScore.data(), flash::convert_layout_acc_rowcol(rAccScore.layout()));
 
     // NOTE: 2. Mask within N BLOCKs
-    if (Is_causal == true && nbi * kBlockN >= seqlen_start) {
-      flash::mask_within_nblock<kBlockM, kBlockN, kNWarps>(scores, m_block, nbi);
+    if (Is_causal ==  true && nbi * kBlockN >= seqlen_start) {
+      // flash::mask_within_nblock<kBlockM, kBlockN, kNWarps>(scores, m_block, nbi);
+      int max_seqlen_k_value = Is_even_MN ? -1 : params.seqlen_k;
+      flash::mask_within_nblock<kBlockM, kBlockN, kNWarps, Is_causal, Is_even_MN>(scores, m_block, nbi, max_seqlen_k_value);    
     }
 
     // NOTE: Wait for V loading to complete, prepare initial state for the next K load
@@ -957,27 +1265,49 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
 
     // Advance K
     mask_id++;
+    // if (m_block == 7 && bidb == 0 && bidh == 0){
+    //   printf("after mask_id++: mask_id %d  \n", mask_id); 
+    // }          
     if (mask_id == num_n_block) {
       nbi = -1;
     }
     else if(mask_id % col_factor == 0) {
       // Load next mask
+      nbi_prev = nbi;
       nbi = mask_ptr[mask_id / col_factor] * col_factor;
+      // if (m_block == 7 && bidb == 0 && bidh == 0){
+      //   printf("update nbi 1: mask_id %d, nbi %d, nbi_prev %d  \n", mask_id, nbi, nbi_prev); 
+      // }             
+      // if (nbi < -1 || nbi > num_n_mask) printf("error nbi: mask_id %d, nbi %d, nbi_prev %d  \n", mask_id, nbi, nbi_prev);
     } else {
+      nbi_prev = nbi;
       nbi++;
+      // if (m_block == 7 && bidb == 0 && bidh == 0){
+      //   printf("update nbi 2: mask_id %d, nbi %d, nbi_prev %d  \n", mask_id, nbi, nbi_prev); 
+      // }    
     }
 
     if (nbi >= 0) {
-      gK = local_tile(K, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(nbi, _));
-      tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
-      flash::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+      // gK = local_tile(K, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}), make_coord(nbi, _));
+      // tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+      // printf("tKgK----------mask_id, nbi, nbi_prev------------%d %d %d\n", mask_id, nbi, nbi_prev);
+      tKgK.data() = tKgK.data() + (nbi - nbi_prev) * int(kBlockN * params.k_row_stride);   
+      // printf("advance K: mask_id %d, nbi %d, nbi_prev %d  \n", mask_id, nbi, nbi_prev); 
+      // if (nbi < -1 || nbi > num_n_mask) printf("error advance K: mask_id %d, nbi %d, nbi_prev %d  \n", mask_id, nbi, nbi_prev);
+      // flash::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+      if (nbi < n_block_max - 1) {
+        flash::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
+      }
+      else {
+        flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV, binfo.actual_seqlen_k - nbi * kBlockN);
+      }
       cute::cp_async_fence();
     }
 
     // Compute softmax
     // NOTE: rAccOut records all the numerators after softmax
-    mask_id == 0 ? flash::softmax_rescale_o</*Is_first=*/true>(scores, scores_max, scores_sum, rAccOut, params.softmax_scale) :
-      flash::softmax_rescale_o</*Is_first=*/false>(scores, scores_max, scores_sum, rAccOut, params.softmax_scale);
+    (mask_id == 1) ? flash::softmax_rescale_o</*Is_first=*/true>(scores, scores_max, scores_sum, rAccOut, params.scale_softmax) :
+      flash::softmax_rescale_o</*Is_first=*/false>(scores, scores_max, scores_sum, rAccOut, params.scale_softmax);
 
     // Actual QK @ V execution
     // (score AKA rAccScore): QK[M, N] @ V[N, dim]
@@ -1005,7 +1335,7 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
     float inv_sum = (sum == 0.f || sum != sum) ? 1.f : 1.f / sum;
     // compute lse
     // NOTE: here we use max * scale 
-    lse(mi) = (sum == 0.f || sum != sum) ? INFINITY : scores_max(mi) * params.softmax_scale + __logf(sum);
+    lse(mi) = (sum == 0.f || sum != sum) ? INFINITY : scores_max(mi) * params.scale_softmax + __logf(sum);
     float scale = inv_sum;
     // for col
     #pragma unroll
@@ -1029,13 +1359,16 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
   // NOTE: Copy to smem first
   cute::copy(smem_tiled_copy_O, taccOrO, taccOsO);
 
-  Tensor gO = local_tile(O, make_tile(Int<kBlockM>{}, Int<kHeadDim>{}), make_coord(m_block, _));
+  // Tensor gO = local_tile(O, make_tile(Int<kBlockM>{}, Int<kHeadDim>{}), make_coord(m_block, _));
+  Tensor gO = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.o_ptr) + row_offset_o),
+  Shape<Int<kBlockM>, Int<kHeadDim>>{},
+  make_stride(params.o_row_stride, _1{}));  
 
   // Create a copy from smem to gmem
   typename Kernel_traits::GmemTiledCopyO gmem_tiled_copy_O;
   auto gmem_thr_copy_O = gmem_tiled_copy_O.get_thread_slice(tidx);
   Tensor tOsO = gmem_thr_copy_O.partition_S(sO);        // ((Atom,AtomNum),ATOM_M,ATOM_N)
-  Tensor tOgO = gmem_thr_copy_O.partition_D(gO(_, _, 0));
+  Tensor tOgO = gmem_thr_copy_O.partition_D(gO);
 
   __syncthreads();
 
@@ -1044,11 +1377,25 @@ __global__ void flash_attention_block_v2_cutlass_kernel(const Params params) {
   // TODO: review, what is the purpose of these two copy operations?
   Tensor tOrO = make_tensor<Element>(shape(tOgO));
   cute::copy(gmem_tiled_copy_O, tOsO, tOrO);
-
-  flash::copy(gmem_tiled_copy_O, tOrO, tOgO);
+  // flash::copy(gmem_tiled_copy_O, tOrO, tOgO);
+    // Construct identity layout for sO
+    Tensor cO = make_identity_tensor(make_shape(size<0>(sO), size<1>(sO)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    // Repeat the partitioning with identity layouts
+    Tensor tOcO = gmem_thr_copy_O.partition_D(cO);                           // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
+    Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgO)));
+    if (!Is_even_K) {
+        #pragma unroll
+        for (int k = 0; k < size(tOpO); ++k) { tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d; }
+    }
+    // Clear_OOB_K must be false since we don't want to write zeros to gmem
+    flash::copy<Is_even_MN, Is_even_K>(
+        gmem_tiled_copy_O, tOrO, tOgO, tOcO, tOpO, binfo.actual_seqlen_q - m_block * kBlockM
+    );  
 
   // NOTE: Write back lse
-  Tensor gLSE = local_tile(LSE, make_tile(Int<kBlockM>{}), make_coord(m_block));
+  // Tensor gLSE = local_tile(LSE, make_tile(Int<kBlockM>{}), make_coord(m_block));
+  Tensor gLSE = make_tensor(make_gmem_ptr(reinterpret_cast<ElementAccum *>(params.softmax_lse_ptr) + row_offset_lse),
+                            Shape<Int<kBlockM>>{}, Stride<_1>{});    
   Tensor caccO = make_identity_tensor(Shape<Int<kBlockM>, Int<kHeadDim>>{});    // (BLK_M,BLK_K) -> (blk_m,blk_k)
   Tensor taccOcO = thr_mma.partition_C(caccO);                           // (MMA,MMA_M,MMA_K)
   static_assert(decltype(size<0>(taccOcO))::value == 4);
@@ -1076,22 +1423,31 @@ void run_flash_block_fwd(Block_flash_fwd_params &params, cudaStream_t stream) {
   using SmemLayoutV = typename Kernel_traits::SmemLayoutKV;
 
   const int num_m_block =
-      (params.q_seqlen + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;
+      (params.seqlen_q + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;
 
-  dim3 grid(num_m_block, params.bs * params.head, 1);
+  // printf("Kernel_traits::kBlockM, Kernel_traits::kBlockN %d %d\n", Kernel_traits::kBlockM, Kernel_traits::kBlockN);    
+  // dim3 grid(num_m_block, params.b * params.h, 1);
+  dim3 grid(num_m_block, params.b, params.h);  
   dim3 block(Kernel_traits::kNThreads);
+  // printf("Launching kernel with gridDim=(%d,%d,%d)\n", grid.x, grid.y, grid.z);
+
+  const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;
+  const bool is_even_K = params.d == Kernel_traits::kHeadDim;
 
   int smem_size = int(sizeof(SharedStorage<Element, SmemLayoutQ, SmemLayoutK, SmemLayoutV>));
 
-  auto kernel = &flash_attention_block_v2_cutlass_kernel<Kernel_traits, Is_causal, Block_flash_fwd_params, 64, 64>;
-  // NOTE: When smem is too large, need to set this
-  if (smem_size >= 48 * 1024) {
-      CUDA_ERROR_CHECK(cudaFuncSetAttribute(
-          kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-  }
+  BOOL_SWITCH(is_even_MN, IsEvenMNConst, [&] {
+    EVENK_SWITCH(is_even_K, IsEvenKConst, [&] {
+        auto kernel = &flash_attention_block_v2_cutlass_kernel<Kernel_traits, Is_causal, IsEvenMNConst, IsEvenKConst, Block_flash_fwd_params, 64, 64>;
+        // auto kernel = &flash_attention_block_v2_cutlass_kernel<Kernel_traits, Is_causal, IsEvenMNConst, IsEvenKConst, Block_flash_fwd_params, 128, 128>;
 
-  // TODO: stream
-  kernel<<<grid, block, smem_size>>>(params);
+        if (smem_size >= 48 * 1024) {
+            CUDA_ERROR_CHECK(cudaFuncSetAttribute(
+                kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+        }      
+        kernel<<<grid, block, smem_size>>>(params);
+    });
+  });
 }
 
 template<typename T, int Headdim>
@@ -1115,7 +1471,7 @@ void run_flash_attn_block_cutlass(Block_flash_fwd_params &params, cudaStream_t s
     // FP16_SWITCH yield elem_type namespace
     FP16_SWITCH(!params.is_bf16, [&] {
         // FWD_HEADDIM_SWITCH yield kHeadDim constexpr
-        FWD_HEADDIM_SWITCH(params.dim, [&] {
+        FWD_HEADDIM_SWITCH(params.d, [&] {
             run_flash_block_fwd_<elem_type, kHeadDim>(params, stream);
         });
     });
@@ -1123,32 +1479,48 @@ void run_flash_attn_block_cutlass(Block_flash_fwd_params &params, cudaStream_t s
 
 
 std::vector<torch::Tensor> flash_attention_block_v2_cutlass(torch::Tensor q, torch::Tensor k,
-                                      torch::Tensor v, torch::Tensor row_mask, bool is_causal = false, float softmax_scale=1) {
+    torch::Tensor v, torch::Tensor row_mask, bool is_causal = false, float softmax_scale=1) {
 
   CHECK_INPUT(q);
   CHECK_INPUT(k);
   CHECK_INPUT(v);
 
-  // Batch size
-  int bs = q.size(0);
-  // Number of heads
-  int head = q.size(1);
-  // Sequence length
-  int seqlen = q.size(2);
-  // Dimension
-  int dim = q.size(3);
+  const auto sizes = q.sizes();
+  const int batch_size = sizes[0];
+  int seqlen_q = sizes[1];
+  int num_heads = sizes[2];
+  const int head_size_og = sizes[3];
+  const int seqlen_k = k.size(1);
+  const int num_heads_k = k.size(2);  
+  auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
+  const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
+  const int seqlen_k_rounded = round_multiple(seqlen_k, 128);  
+  const int head_size = round_multiple(head_size_og, 8);
+  const int head_size_rounded = round_multiple(head_size, 32);  
+  
   auto out = torch::empty_like(q);
-
   auto opts = q.options();
-  auto softmax_lse = torch::empty({bs, head, seqlen}, opts.dtype(torch::kFloat32));
-
+  auto softmax_lse = torch::empty({batch_size, num_heads, seqlen_q}, opts.dtype(torch::kFloat32));
+  
   Block_flash_fwd_params params;
-  set_params_fprop(params, q, k, v, out,
-      softmax_lse.data_ptr(), softmax_scale, is_causal);
-
+  set_params_fprop(params,
+                  batch_size,
+                  seqlen_q, seqlen_k,
+                  seqlen_q_rounded, seqlen_k_rounded,
+                  num_heads, num_heads_k,
+                  head_size, head_size_rounded,
+                  q, k, v, out,
+                  /*cu_seqlens_q_d=*/nullptr,
+                  /*cu_seqlens_k_d=*/nullptr,
+                  /*seqused_k=*/nullptr,
+                  softmax_lse.data_ptr(),
+                  softmax_scale,
+                  is_causal);     
   // TODO: get ptr
   params.block_mask_ptr = reinterpret_cast<int*>(row_mask.data_ptr());
+  params.mask_batch_stride = row_mask.stride(0);
   params.mask_head_stride = row_mask.stride(1);
+  // printf("params.mask_batch_stride:%" PRId64 ", params.mask_head_stride:%" PRId64 "\n", params.mask_batch_stride, params.mask_head_stride); // 2048 64
 
   run_flash_attn_block_cutlass(params, 0);
 
@@ -1157,4 +1529,60 @@ std::vector<torch::Tensor> flash_attention_block_v2_cutlass(torch::Tensor q, tor
   CUDA_ERROR_CHECK(cudaGetLastError());
 
   return {out, softmax_lse};
+}
+
+
+std::vector<torch::Tensor> varlen_flash_attention_block_v2_cutlass(torch::Tensor q, torch::Tensor k,
+  torch::Tensor v, torch::Tensor cu_seqlens_q, torch::Tensor cu_seqlens_k, torch::Tensor row_mask, int max_seqlen_q, int max_seqlen_k, bool is_causal = false, float softmax_scale=1){
+  CHECK_INPUT(q);
+  CHECK_INPUT(k);
+  CHECK_INPUT(v);
+
+  CHECK_INPUT(cu_seqlens_q);
+  CHECK_INPUT(cu_seqlens_k);
+  
+  const auto sizes = q.sizes();
+  const int total_q = sizes[0];
+  const int batch_size = cu_seqlens_q.numel() - 1;
+  const int num_heads = sizes[1];
+  const int head_size_og = sizes[2];
+  const int total_k = k.size(0);
+  const int num_heads_k = k.size(1);
+  auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
+  const int head_size = round_multiple(head_size_og, 8);
+  const int head_size_rounded = round_multiple(head_size, 32);
+  const int seqlen_q_rounded = round_multiple(max_seqlen_q, 128);
+  const int seqlen_k_rounded = round_multiple(max_seqlen_k, 128);  
+
+  auto out = torch::empty_like(q);
+  auto opts = q.options();
+  auto softmax_lse = torch::empty({batch_size, num_heads, max_seqlen_q}, opts.dtype(torch::kFloat32));
+
+  Block_flash_fwd_params params;
+  set_params_fprop(params,
+                  batch_size,
+                  max_seqlen_q, max_seqlen_k,
+                  seqlen_q_rounded, seqlen_k_rounded,
+                  num_heads, num_heads_k,
+                  head_size, head_size_rounded,
+                  q, k, v, out,
+                  cu_seqlens_q.data_ptr(),
+                  cu_seqlens_k.data_ptr(),
+                  /*seqused_k=*/nullptr,
+                  softmax_lse.data_ptr(),
+                  softmax_scale,
+                  is_causal);
+
+  // TODO: get ptr
+  params.block_mask_ptr = reinterpret_cast<int*>(row_mask.data_ptr());
+  params.mask_batch_stride = row_mask.stride(0);
+  params.mask_head_stride = row_mask.stride(1);
+
+  run_flash_attn_block_cutlass(params, 0);
+
+  // Wait until kernel finishes
+  cudaDeviceSynchronize();
+  CUDA_ERROR_CHECK(cudaGetLastError());
+
+  return {out, softmax_lse};    
 }
