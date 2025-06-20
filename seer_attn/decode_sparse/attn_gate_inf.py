@@ -229,7 +229,10 @@ class AttnGate(nn.Module):
             
             return mask
         else:
-            k_pooled = [pool_func(k, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
+            if k.shape[1] >= self.block_size:
+                k_pooled = [pool_func(k, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
+            else:
+                k_pooled = [pool_func(k, kernel_size=[k.shape[1], 1, 1], stride=[k.shape[1], 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
             k_pooled = torch.cat(k_pooled, dim=-1)        
             k_compressed = self.attngate_linear_k(k_pooled)
             if self.use_qk_norm:
