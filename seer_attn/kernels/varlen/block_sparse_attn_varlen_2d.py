@@ -10,6 +10,7 @@ import numpy as np
 
 import triton
 import triton.language as tl
+from flash_attn import flash_attn_varlen_func as flash_attn_func_offical
 
 import os
 
@@ -95,14 +96,7 @@ def _fwd_kernel_inner(
     return acc, l_i, m_i
 
 
-# @triton.autotune(
-#     configs=[
-#         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
-#         for num_warps in [1, 2, 4]\
-#         for num_stages in [1, 2, 3, 4, 7]
-#     ],
-#     key=['BLOCK_M', 'BLOCK_N', 'BLOCK_D'],
-# )
+
 @triton.jit
 def _fwd_kernel_varlen(
     Q, K, V, Out, L,
@@ -117,7 +111,6 @@ def _fwd_kernel_varlen(
     stride_lt, stride_lh,
     stride_bmask_z, stride_bmask_h, stride_bmask_m, stride_bmask_n,
     q_k_ratio,
-    output_lse: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_D: tl.constexpr,
@@ -208,16 +201,16 @@ def _fwd_kernel_varlen(
     acc = acc * l_recip
     acc = acc.to(Out.dtype.element_ty) 
 
-    if output_lse:
-        l_ptrs = L + off_h_q * stride_lh + cu_q_start * stride_lt + offs_m * stride_lt
-        end_m_idx = (start_m + 1) * BLOCK_M
-        overflow_size = end_m_idx - seqlen_q
-        if overflow_size > 0:
-            boundary = tl.full((BLOCK_M, ), BLOCK_M - overflow_size, dtype=tl.int64)
-            l_ptrs_mask = tl.arange(0, BLOCK_M) < boundary
-            tl.store(l_ptrs, m_i, mask=l_ptrs_mask) # the log of the normalization constant
-        else:
-            tl.store(l_ptrs, m_i) # the log of the normalization constant
+
+    l_ptrs = L + off_h_q * stride_lh + cu_q_start * stride_lt + offs_m * stride_lt
+    end_m_idx = (start_m + 1) * BLOCK_M
+    overflow_size = end_m_idx - seqlen_q
+    if overflow_size > 0:
+        boundary = tl.full((BLOCK_M, ), BLOCK_M - overflow_size, dtype=tl.int64)
+        l_ptrs_mask = tl.arange(0, BLOCK_M) < boundary
+        tl.store(l_ptrs, m_i, mask=l_ptrs_mask) # the log of the normalization constant
+    else:
+        tl.store(l_ptrs, m_i) # the log of the normalization constant
 
 
     tl.store(Out + offs_m[:, None] * stride_ot + offs_d[None, :] * stride_od, acc,
@@ -226,16 +219,14 @@ def _fwd_kernel_varlen(
 
 
 def blocksparse_flash_attn_varlen_fwd(
-    q, k, v, 
+    q, k, v, # (#tokens, n_heads, head_size)
     cu_seqlens_k,
     cu_seqlens_q,
     max_seqlen,
     sm_scale,
     block_mask,
     block_size=64,
-    output_lse=True
 ):
-
     # split q to blocks
     _, n_heads, head_size = q.shape
     batch = cu_seqlens_k.size(0) - 1
@@ -290,14 +281,11 @@ def blocksparse_flash_attn_varlen_fwd(
             BLOCK_N = block_size,
             BLOCK_D = block_d,
             num_warps = 4,
-            num_stages = 2,
-            output_lse=output_lse,
+            num_stages = 1,
             **extra_kern_args
         )
-    if output_lse:
-        return out, L
-    else:
-        return out
+
+    return out, L
 
 
 @triton.jit
@@ -705,3 +693,158 @@ class _block_sparse_attn_varlen(torch.autograd.Function):
 
 
 block_2d_sparse_attn_varlen_func = _block_sparse_attn_varlen.apply
+
+if __name__ == "__main__":
+    # cd SeerAttention/seer_attn/kernels/varlen/
+    # python3 block_sparse_attn_varlen_2d.py
+
+    import argparse
+    parser = argparse.ArgumentParser(description="Block-sparse VarLen 2D Attention")
+    parser.add_argument("--bs",          type=int,   default=4,    help="batch size")
+    parser.add_argument("--seqlen",      type=int,   default=4096, help="sequence length")
+    parser.add_argument("--dim",         type=int,   default=64,   help="head dimension")
+    parser.add_argument("--head_q",      type=int,   default=32,   help="number of Q heads")
+    parser.add_argument("--head_kv",     type=int,   default=4,    help="number of KV heads")
+    parser.add_argument("--block_size",  type=int,   default=64,   help="block size")
+    parser.add_argument("--sparsity",    type=float, default=0.0,  help="sparsity ratio")
+    parser.add_argument("--sm_scale",    type=float, default=None, help="softmax scale; if unset uses 1/sqrt(dim)")
+    args = parser.parse_args()
+
+
+
+    from einops import rearrange
+    from block_sparse_seer_attn import varlen_block_sparse_attention
+    def get_tensors(bs, seq_len, num_heads_q, num_heads_kv, head_dim, dtype=torch.float16):
+        q = (torch.empty((bs, seq_len, num_heads_q, head_dim), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
+        k = (torch.empty((bs, seq_len, num_heads_kv, head_dim), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
+        v = (torch.empty((bs, seq_len, num_heads_kv, head_dim), dtype=dtype, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_())
+        return q, k, v
+
+    def generate_qkv(
+            q, k, v
+        ):
+        """
+        Arguments:
+            q: (batch_size, seqlen_q, nheads, d)
+            k: (batch_size, seqlen_k, nheads_k, d)
+            v: (batch_size, seqlen_k, nheads_k, d)
+            query_padding_mask: (batch_size, seqlen), bool
+            key_padding_mask: (batch_size, seqlen), bool
+        """
+        batch_size, seqlen_q, nheads, d = q.shape
+        _, seqlen_k, nheads_k, _ = k.shape
+        assert k.shape == (batch_size, seqlen_k, nheads_k, d)
+        assert v.shape == (batch_size, seqlen_k, nheads_k, d)
+
+        q_unpad = rearrange(q, "b s h d -> (b s) h d")
+        cu_seqlens_q = torch.arange(
+            0, (batch_size + 1) * seqlen_q, step=seqlen_q, dtype=torch.int32, device=q_unpad.device
+        )
+        max_seqlen_q = seqlen_q
+        output_pad_fn = lambda output_unpad: rearrange(
+            output_unpad, "(b s) h d -> b s h d", b=batch_size
+        )
+
+        k_unpad = rearrange(k, "b s h d -> (b s) h d")
+        v_unpad = rearrange(v, "b s h d -> (b s) h d")
+        cu_seqlens_k = torch.arange(
+            0, (batch_size + 1) * seqlen_k, step=seqlen_k, dtype=torch.int32, device=k_unpad.device
+        )
+        max_seqlen_k = seqlen_k
+
+        return (
+            q_unpad.detach().requires_grad_(),
+            k_unpad.detach().requires_grad_(),
+            v_unpad.detach().requires_grad_(),
+            cu_seqlens_q,
+            cu_seqlens_k,
+            max_seqlen_q,
+            max_seqlen_k,
+        )
+
+    def generate_base_sparsity_mask(max_seqlen_q, max_seqlen_k, round_base, m_block_dim, n_block_dim, sparsity, causal=False, device="cuda"):
+        def round_to_multiple(x, base):
+            return ((x + base - 1) // base) * base
+        nrow, ncol = round_to_multiple(max_seqlen_q, round_base) // m_block_dim, round_to_multiple(max_seqlen_k, round_base) // n_block_dim
+        base_mask = torch.zeros(1, nrow, ncol, device=device, dtype=torch.bool)
+        total_block_num = 0
+
+        density = 1.0 - sparsity
+        if not density == 0.0 and not density == 1.0:
+            for i in range(nrow): # do in reverse order
+                idx = nrow - i - 1
+                if causal:
+                    available_col_num = max(0, ncol - i)
+                    total_block_num += available_col_num
+                    num_one = max(1, int(density * available_col_num))
+                    base_mask[0][idx, torch.randperm(available_col_num)[:num_one]] = True
+                else:
+                    available_col_num = ncol
+                    total_block_num += available_col_num
+                    num_one = max(1, int(density * available_col_num))
+                    base_mask[0][idx, torch.randperm(available_col_num)[:num_one]] = True
+        elif density == 1.0:
+            base_mask[0] = torch.ones_like(base_mask[0])
+            total_block_num = nrow * ncol
+        else:
+            total_block_num = nrow * ncol
+        
+        calculated_block_num = base_mask.sum().item()
+        real_sparsity = 1.0 - calculated_block_num / total_block_num
+        return base_mask, real_sparsity
+
+    BS, SEQLEN, DIM = args.bs, args.seqlen, args.dim
+    HEAD_Q = args.head_q
+    HEAD_KV = args.head_kv
+    block_size = args.block_size
+    sparsity = args.sparsity
+    if args.sm_scale is None:
+        sm_scale = 1.0 / math.sqrt(DIM)
+    else:
+        sm_scale = args.sm_scale
+
+
+    is_causal = True
+    device = 'cuda'
+    dtype = torch.float16
+
+    q,k,v = get_tensors(BS, SEQLEN, HEAD_Q, HEAD_KV, DIM, dtype=dtype)
+
+    (
+        q_unpad,
+        k_unpad,
+        v_unpad,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+    ) = generate_qkv(q, k, v)
+
+
+    # CHECK correctness
+    base_blockmask, real_sparsity = generate_base_sparsity_mask(SEQLEN, SEQLEN, block_size, block_size, block_size, sparsity, is_causal, device='cuda')
+    base_blockmask = base_blockmask.unsqueeze(0).repeat(BS, HEAD_Q, 1, 1)
+    cuda_out, _ = varlen_block_sparse_attention(q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, base_blockmask, max_seqlen_q, max_seqlen_k, is_causal, sm_scale)
+    
+    if sparsity == 0.0:
+        flash_attn_output = flash_attn_func_offical(q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal=is_causal, softmax_scale=sm_scale)
+
+    # q, k, v shapes: [t, num_heads, head_dim]
+    # block_mask shapes: [bsz, num_heads, ceil(t/B), ceil(t/B)]
+    triton_output = block_2d_sparse_attn_varlen_func(
+        q_unpad,
+        k_unpad,
+        v_unpad,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        sm_scale,
+        base_blockmask,
+        block_size,            
+    )
+    if sparsity == 0.0:
+        assert torch.allclose(triton_output, flash_attn_output, rtol=0, atol=1e-2)
+        print("Triton output matches Flash Attention output for dense case.")
+
+    assert torch.allclose(triton_output, cuda_out, rtol=0, atol=1e-2) 
+    print("Triton output matches CUDA output for sparse case.")

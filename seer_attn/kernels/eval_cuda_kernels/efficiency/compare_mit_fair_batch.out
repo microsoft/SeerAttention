@@ -1,0 +1,141 @@
+MIT BLOCK SPARSE ATTENTION
+torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.0 ###
+block_sparse_attentionMIT: 5.70 TFLOPs/s, 6.03 ms, 
+torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.19444444444444442 ###
+block_sparse_attentionMIT: 33.20 TFLOPs/s, 1.03 ms, 
+torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.2777777777777778 ###
+block_sparse_attentionMIT: 58.51 TFLOPs/s, 0.59 ms, 
+torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.4722222222222222 ###
+block_sparse_attentionMIT: 34.77 TFLOPs/s, 0.99 ms, 
+torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.6388888888888888 ###
+block_sparse_attentionMIT: 62.92 TFLOPs/s, 0.55 ms, 
+torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.7777777777777778 ###
+block_sparse_attentionMIT: 35.50 TFLOPs/s, 0.97 ms, 
+torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4096, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.7777777777777778 ###
+block_sparse_attentionMIT: 34.82 TFLOPs/s, 0.99 ms, 
+MY BLOCK SPARSE ATTENTION
+torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.0 ###
+block_sparse_attentionmy: 55.67 TFLOPs/s, 0.62 ms, 
+torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.19444444444444442 ###
+block_sparse_attentionmy: 60.53 TFLOPs/s, 0.57 ms, 
+torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.2777777777777778 ###
+block_sparse_attentionmy: 46.88 TFLOPs/s, 0.73 ms, 
+torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.4722222222222222 ###
+block_sparse_attentionmy: 49.64 TFLOPs/s, 0.69 ms, 
+torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.6388888888888888 ###
+block_sparse_attentionmy: 58.57 TFLOPs/s, 0.59 ms, 
+torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.7777777777777778 ###
+block_sparse_attentionmy: 56.74 TFLOPs/s, 0.61 ms, 
+torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 1024, 32, 128]) torch.Size([4, 32, 8, 8])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=1024, real_sparsity=0.7777777777777778 ###
+block_sparse_attentionmy: 53.52 TFLOPs/s, 0.64 ms, 
+--------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------
+MIT BLOCK SPARSE ATTENTION
+torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.0 ###
+block_sparse_attentionMIT: 49.38 TFLOPs/s, 11.13 ms, 
+torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.12689393939393945 ###
+block_sparse_attentionMIT: 50.86 TFLOPs/s, 10.81 ms, 
+torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.2234848484848485 ###
+block_sparse_attentionMIT: 170.34 TFLOPs/s, 3.23 ms, 
+torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.42234848484848486 ###
+block_sparse_attentionMIT: 208.07 TFLOPs/s, 2.64 ms, 
+torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.6212121212121212 ###
+block_sparse_attentionMIT: 257.14 TFLOPs/s, 2.14 ms, 
+torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.8257575757575757 ###
+block_sparse_attentionMIT: 336.37 TFLOPs/s, 1.63 ms, 
+torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([16384, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.9128787878787878 ###
+block_sparse_attentionMIT: 374.13 TFLOPs/s, 1.47 ms, 
+MY BLOCK SPARSE ATTENTION
+torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.0 ###
+block_sparse_attentionmy: 105.87 TFLOPs/s, 5.19 ms, 
+torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.12689393939393945 ###
+block_sparse_attentionmy: 79.45 TFLOPs/s, 6.92 ms, 
+torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.2234848484848485 ###
+block_sparse_attentionmy: 75.24 TFLOPs/s, 7.31 ms, 
+torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.42234848484848486 ###
+block_sparse_attentionmy: 272.31 TFLOPs/s, 2.02 ms, 
+torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.6212121212121212 ###
+block_sparse_attentionmy: 369.63 TFLOPs/s, 1.49 ms, 
+torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.8257575757575757 ###
+block_sparse_attentionmy: 541.53 TFLOPs/s, 1.02 ms, 
+torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 4096, 32, 128]) torch.Size([4, 32, 32, 32])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=4096, real_sparsity=0.9128787878787878 ###
+block_sparse_attentionmy: 720.63 TFLOPs/s, 0.76 ms, 
+--------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------
+MIT BLOCK SPARSE ATTENTION
+torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.0 ###
+block_sparse_attentionMIT: 84.54 TFLOPs/s, 26.01 ms, 
+torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.11394230769230773 ###
+block_sparse_attentionMIT: 137.36 TFLOPs/s, 16.01 ms, 
+torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.2120192307692308 ###
+block_sparse_attentionMIT: 180.80 TFLOPs/s, 12.16 ms, 
+torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.41201923076923075 ###
+block_sparse_attentionMIT: 250.70 TFLOPs/s, 8.77 ms, 
+torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.6115384615384616 ###
+block_sparse_attentionMIT: 359.16 TFLOPs/s, 6.12 ms, 
+torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.8158653846153846 ###
+block_sparse_attentionMIT: 423.60 TFLOPs/s, 5.19 ms, 
+torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([32768, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.9115384615384615 ###
+block_sparse_attentionMIT: 331.85 TFLOPs/s, 6.63 ms, 
+MY BLOCK SPARSE ATTENTION
+torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.0 ###
+block_sparse_attentionmy: 156.43 TFLOPs/s, 14.06 ms, 
+torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.11394230769230773 ###
+block_sparse_attentionmy: 158.83 TFLOPs/s, 13.85 ms, 
+torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.2120192307692308 ###
+block_sparse_attentionmy: 192.93 TFLOPs/s, 11.40 ms, 
+torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.41201923076923075 ###
+block_sparse_attentionmy: 182.69 TFLOPs/s, 12.04 ms, 
+torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.6115384615384616 ###
+block_sparse_attentionmy: 184.30 TFLOPs/s, 11.93 ms, 
+torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.8158653846153846 ###
+block_sparse_attentionmy: 744.10 TFLOPs/s, 2.96 ms, 
+torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 8192, 32, 128]) torch.Size([4, 32, 64, 64])
+### causal=True, headdim=128, nheads = 32, batch_size=4, seqlen=8192, real_sparsity=0.9115384615384615 ###
+block_sparse_attentionmy: 1421.37 TFLOPs/s, 1.55 ms, 
+--------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------
