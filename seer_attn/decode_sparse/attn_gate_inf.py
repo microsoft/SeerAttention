@@ -198,10 +198,10 @@ class AttnGate(nn.Module):
                 if position_embeddings is not None:
                     cos, sin = position_embeddings ## change to positional embedding instead of block_position_embeddings
                     if self.use_flash_rope:
-                        k = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
+                        k_compressed = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
                     else:
-                        k = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
-                k_compressed = k_compressed_cache.update(k_compressed=k_compressed, layer_idx=layer_idx, is_decode=is_decode)
+                        k_compressed = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
+                k = k_compressed_cache.update(k_compressed=k_compressed, layer_idx=layer_idx, is_decode=is_decode)
 
 
             q = q.squeeze(1) 
