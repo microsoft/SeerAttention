@@ -26,7 +26,7 @@ gradient_accumulation_steps=$((bs/gpus))
 
 export WANDB_MODE=offline
 
-run_name="${prefix}_${headpooling_type}_${gate_type}_bs${bs}_gdim${gate_hidden_size}_block${blocksize}_wd${weight_decay}_lr${lr}_slice${loss_slice_ratio}_qknorm${use_qk_norm}"
+run_name="${prefix}_${headpooling_type}_${gate_type}_bs${bs}_steps${steps}_gdim${gate_hidden_size}_block${blocksize}_wd${weight_decay}_lr${lr}_slice${loss_slice_ratio}_qknorm${use_qk_norm}"
 echo "Running with headpooling type: ${headpooling_type}"
 echo "Run name: ${run_name}"
 
