@@ -154,3 +154,53 @@ def dense_flash_attention_forward(
         )
 
     return attn_output
+
+
+
+def dense_flash_attention_forward_right_pad(
+    query_states: torch.Tensor,
+    key_states: torch.Tensor,
+    value_states: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    query_length: int,
+    softmax_scale: Optional[float] = None,
+    cache_seqlens: Optional[torch.Tensor] = None,
+    **kwargs,
+):
+
+    if query_length > 1:
+        # assert attention_mask is not None, "Attention mask must be provided for Flash Attention."
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (query_states.shape[0], query_states.shape[1]), device=query_states.device, dtype=torch.int32
+            )
+        batch_size = query_states.shape[0]
+        query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = _upad_input(
+            query_states, key_states, value_states, attention_mask, query_length
+        )
+        cu_seqlens_q, cu_seqlens_k = cu_seq_lens
+        max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_lens
+
+        attn_output_unpad = flash_attn_varlen_func(
+            query_states,
+            key_states,
+            value_states,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_in_batch_q,
+            max_seqlen_k=max_seqlen_in_batch_k,
+            softmax_scale=softmax_scale,
+            causal=True,
+        )
+        attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
+    else:
+
+        attn_output = flash_attn_with_kvcache(
+            query_states, # [batch_size, num_heads, head_dim] or [batch_size, 1, num_heads, head_dim]
+            key_states, # [batch_size, max_cache_len, num_key_value_heads, head_dim]
+            value_states, # [batch_size, max_cache_len, num_key_value_heads, head_dim]
+            cache_seqlens=cache_seqlens, # [batch_size]
+            softmax_scale=softmax_scale,
+        )
+
+    return attn_output
