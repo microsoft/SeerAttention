@@ -161,6 +161,7 @@ class Qwen3SeerAttention(nn.Module):
 
         input_shape = hidden_states.shape[:-1]
         q_len = hidden_states.shape[1]
+        is_decode = q_len == 1 and past_key_value is not None
 
         q = self.q_proj(hidden_states)
         k = self.k_proj(hidden_states)
@@ -184,7 +185,9 @@ class Qwen3SeerAttention(nn.Module):
         else:
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=2)
 
-        if past_key_value is not None:
+
+    
+        if is_decode and past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             k, v = past_key_value.update(k, v, self.layer_idx, cache_kwargs)
 
@@ -204,8 +207,6 @@ class Qwen3SeerAttention(nn.Module):
         #         sparsity_method=self.config.seerattn_sparsity_method,
         #     )
 
-
-
         # if self.config.seerattn_implementation == "seer_dense" or self.layer_idx < self.seerattn_start_layer:
         attn_output = dense_flash_attention_forward_right_pad(
             q,
@@ -216,6 +217,14 @@ class Qwen3SeerAttention(nn.Module):
             softmax_scale=self.scaling,
             cache_seqlens=cache_seqlens,
         )
+
+        if not is_decode and past_key_value is not None:    
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            k, v = past_key_value.update(k, v, self.layer_idx, cache_kwargs)       
+
+
+        # print("hidden:", hidden_states, "q:", q, "k:", k, "v:", v, "attn_output:", attn_output, "attention_mask:", attention_mask, "cache_seqlens:", cache_seqlens)
+
         # else:
         #     attn_output = sparse_flash_attention_forward(
         #         q,
@@ -684,9 +693,11 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                     logits_to_keep=1,
             )
                 
-
+            print("output logit", outputs.logits)
             logits = outputs.logits[:, -1, :].clone().float()
             logits = logits.to(input_ids.device)
+            
+
 
             if do_sample:
                 logits /= generation_config.temperature

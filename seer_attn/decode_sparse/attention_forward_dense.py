@@ -181,6 +181,10 @@ def dense_flash_attention_forward_right_pad(
         cu_seqlens_q, cu_seqlens_k = cu_seq_lens
         max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_lens
 
+        for i in range(len(cu_seqlens_q) - 1):
+            print(key_states[cu_seqlens_k[i]: cu_seqlens_k[i + 1]])
+
+
         attn_output_unpad = flash_attn_varlen_func(
             query_states,
             key_states,
