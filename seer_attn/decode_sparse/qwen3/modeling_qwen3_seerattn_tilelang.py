@@ -38,7 +38,7 @@ from ..attention_forward_sparse import sparse_flash_attention_forward
 from ..attention_forward_dense import dense_flash_attention_forward, dense_flash_attention_forward_right_pad
 from ...modules.layernorm import RMSNorm
 from flash_attn.layers.rotary import apply_rotary_emb_func
-from ...decode_sparse.cache_utils import KCompressionCache, StaticCache
+from ...decode_sparse.cache_utils import KCompressionCache, StaticCache, KCompressionCacheRightPad
 from ...modules.common import apply_rotary_pos_emb
 
 
@@ -132,6 +132,7 @@ class Qwen3SeerAttention(nn.Module):
             q_head_pooling_type=config.seerattn_q_head_pooling_type,
             use_flash_rope=config.use_flash_rope,
             use_qk_norm=config.seerattn_use_qk_norm,
+            use_rightpad=True,
         )
 
         self.mask_loss_func = torch.nn.KLDivLoss()
@@ -474,7 +475,10 @@ class Qwen3Model(Qwen3PreTrainedModel):
                     self.k_compressed_cache = KCompressionCache(self.num_layers, self.config.seerattn_gate_block_size)                
                 k_compressed_cache = self.k_compressed_cache
 
+        batch_size = inputs_embeds.shape[0]
         cache_seqlens = torch.sum(attention_mask.to(torch.int32), dim=-1, dtype=torch.int32) 
+        max_cache_len = cache_seqlens.max().item() if cache_seqlens.numel() > 0 else 0
+        batch_indices = torch.arange(batch_size, device=cache_seqlens.device, dtype=torch.int32)
         if cache_position is None:
             past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
             cache_position = torch.arange(
@@ -485,10 +489,8 @@ class Qwen3Model(Qwen3PreTrainedModel):
             cache_position = cache_seqlens.to(torch.int64) - 1
             position_ids = cache_position.unsqueeze(1) ## shape [batch_size, 1]
 
-
         print("input_ids:", input_ids.shape, "cache_seqlens", cache_seqlens, "cache_position", cache_position, "position_ids", position_ids, "attention_mask", attention_mask, "attnshape", attention_mask.shape)
         
-
         hidden_states = inputs_embeds
 
 
@@ -673,7 +675,7 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         device = input_ids.device
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
         current_kvcache = StaticCache(config=self.config, max_batch_size=batch_size, max_cache_len=max_length, device="cuda", dtype=torch.bfloat16)
-        current_kcompressed_cache = KCompressionCache(self.num_layers, self.block_size)
+        current_kcompressed_cache = KCompressionCacheRightPad(self.num_layers, self.block_size, batch_size, device)
         
         cur_input = generated
 
@@ -697,8 +699,6 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             logits = outputs.logits[:, -1, :].clone().float()
             logits = logits.to(input_ids.device)
             
-
-
             if do_sample:
                 logits /= generation_config.temperature
                 processed_logits = top_p_warper(cur_input, logits)

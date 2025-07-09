@@ -118,6 +118,7 @@ class AttnGate(nn.Module):
                  k_pooling_funcs,
                  use_flash_rope,
                  use_qk_norm,
+                 use_rightpad=False
                 ):
         super(AttnGate, self).__init__()
         self.block_size = block_size
@@ -129,6 +130,7 @@ class AttnGate(nn.Module):
         self.k_pooling_funcs = k_pooling_funcs
         self.use_flash_rope = use_flash_rope
         self.use_qk_norm = use_qk_norm
+        self.use_rightpad = use_rightpad
     
 
         self.k_dup_size = len(k_pooling_funcs)
@@ -148,8 +150,14 @@ class AttnGate(nn.Module):
             self.attngate_qnorm = RMSNorm(self.gate_hidden_size, eps=1e-06)
             self.attngate_knorm = RMSNorm(self.gate_hidden_size, eps=1e-06)
         
+    def forward(self, *args, **kwargs):
+        if self.use_rightpad:
+            return self.forward_rightpad(*args, **kwargs)
+        else:
+            return self.forward_leftpad(*args, **kwargs)
 
-    def forward(self, 
+
+    def forward_leftpad(self, 
             k, # [b, klen, k_head, head_dim]
             layer_idx,
             k_compressed_cache,
@@ -254,6 +262,112 @@ class AttnGate(nn.Module):
             k = k_compressed_cache.update(layer_idx=layer_idx, k_compressed=k_compressed, k_remainder=k_remainder, is_decode=is_decode)
             return None
 
+    def forward_rightpad(self, 
+            q,
+            k, 
+            layer_idx,
+            batch_indices,
+            past_key_value, # static right pad cache
+            k_compressed_cache, # dynamic cache
+            attention_mask, # [b, 1, klen]
+            cache_seqlens, # [b, klen]
+            max_cache_len, 
+            position_embeddings=None,
+            block_position_embeddings=None, 
+            threshold=0.0,
+            block_budget=None,
+            sparsity_method="threshold",
+        ):  
+
+        is_decode = k.shape[1] == 1        
+
+        if is_decode:
+            assert q.dim() == 4
+            if self.q_head_pooling_type == "Qavgproj" or self.q_head_pooling_type == "Qavg":
+                q = F.avg_pool2d(q, kernel_size=[self.gqa_group_size, 1], stride=[self.gqa_group_size, 1])
+            if self.q_head_pooling_type == "Qavgproj" or self.q_head_pooling_type == "Qproj":
+                q = self.attngate_linear_q(q)
+
+            if self.use_qk_norm:
+                q = self.attngate_qnorm(q)
+
+            if position_embeddings is not None:
+                cos, sin = position_embeddings
+                if self.use_flash_rope:
+                    q = apply_rotary_emb_func(q, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
+                else:
+                    q = apply_rotary_pos_emb_single(q, cos, sin, unsqueeze_dim=2)
+
+            if max_cache_len % self.block_size == 0:
+                cache_block_length = torch.floor_divide(cache_seqlens, self.block_size).to(torch.int32)
+                remainder = past_key_value.key_cache[layer_idx][batch_indices, (cache_block_length - 1) * self.block_size: cache_block_length * self.block_size, :, :] ## get remainder from k cache instead of cache
+                k_compressed = [pool_func(remainder, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
+                k_compressed = torch.cat(k_compressed, dim=-1)        
+                k_compressed = self.attngate_linear_k(k_compressed) ## [b, 1, k_head, dim]
+
+                if self.use_qk_norm:
+                    k_compressed = self.attngate_knorm(k_compressed)
+
+                if position_embeddings is not None:
+                    cos, sin = position_embeddings 
+                    if self.use_flash_rope:
+                        k_compressed = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
+                    else:
+                        k_compressed = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
+                    
+                k = k_compressed_cache.update(
+                    k_compressed=k_compressed, 
+                    layer_idx=layer_idx, 
+                    is_decode=is_decode, 
+                    cache_block_position=cache_block_length - 1, 
+                    batch_indices=batch_indices
+                )
+
+
+            q = q.squeeze(1) 
+
+            if self.q_head_pooling_type == "Qorig":
+                q = q.view(q.shape[0], self.num_k_head, self.gqa_group_size, q.shape[2])
+                attn = torch.einsum('bkgd,bskd->bks', q, k)
+                scale = 1 / (math.sqrt(self.gate_hidden_size) * self.gqa_group_size)
+                attn.mul_(scale)
+            else: 
+                attn = torch.einsum('bhd,bshd->bhs', q, k)
+                attn = attn * (1 / math.sqrt(self.gate_hidden_size))
+
+
+            if attention_mask.dtype == torch.bool:
+                attn = attn.masked_fill(~attention_mask, -1e20)
+            else:
+                attn = attn + attention_mask
+            attn = F.softmax(attn, dim=-1)
+            if sparsity_method == "token_budget":
+                mask = get_sparse_attn_mask_from_budget(attn, block_budget, attention_mask)
+            elif sparsity_method == "threshold":
+                mask = get_sparse_attn_mask_from_threshold(attn, threshold)
+            mask[batch_indices, : ,cache_block_length - 1] = True
+            return mask
+        
+        else:
+            if k.shape[1] >= self.block_size:
+                k_pooled = [pool_func(k, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
+            else:
+                k_pooled = [pool_func(k, kernel_size=[k.shape[1], 1, 1], stride=[k.shape[1], 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
+            k_pooled = torch.cat(k_pooled, dim=-1)        
+            k_compressed = self.attngate_linear_k(k_pooled)
+            if self.use_qk_norm:
+                k_compressed = self.attngate_knorm(k_compressed)
+
+            if block_position_embeddings is not None:
+                cos, sin = block_position_embeddings
+                if self.use_flash_rope:
+                    k_compressed = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
+                else:
+                    k_compressed = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
+            k = k_compressed_cache.update(layer_idx=layer_idx, k_compressed=k_compressed, is_decode=is_decode)
+            return None
+
+                
 
 
 POOL_FUNCS = {
@@ -268,7 +382,8 @@ def _create_generic_attngate_class(base_class, suffix, k_pooling_names):
     class_name = f"K{''.join(k_pooling_names)}{suffix}"
 
     class NewAttnGate(base_class):
-        def __init__(self, block_size, model_hidden_size, gate_hidden_size, num_k_head, num_q_head, q_head_pooling_type, use_flash_rope=False, use_qk_norm=False):
+        def __init__(self, block_size, model_hidden_size, gate_hidden_size, num_k_head, num_q_head, 
+                     q_head_pooling_type, use_flash_rope=False, use_qk_norm=False, use_rightpad=False):
             super(NewAttnGate, self).__init__(
                 block_size=block_size,
                 model_hidden_size=model_hidden_size,
@@ -279,6 +394,7 @@ def _create_generic_attngate_class(base_class, suffix, k_pooling_names):
                 k_pooling_funcs=k_pooling_funcs,
                 use_flash_rope=use_flash_rope,
                 use_qk_norm=use_qk_norm,
+                use_rightpad=use_rightpad
             )
     NewAttnGate.__name__ = class_name
     return class_name, NewAttnGate

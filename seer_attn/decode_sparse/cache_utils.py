@@ -68,6 +68,49 @@ class KCompressionCache(Cache):
         return self.k_compressed[layer_idx]
 
 
+class KCompressionCacheRightPad(Cache):
+    """
+    KCompressionCacheRightPad assume right padding of input (used in tilelang kernel).
+    This cache can also be implemented as static cache if necessary.
+    """
+
+    def __init__(self, num_layers: int, block_size: int, batch_size: int, device: torch.device) -> None:
+        super().__init__()
+        self.num_layers = num_layers
+        self.block_size = block_size
+        self.batch_size = batch_size
+        # initialize caches for each layer
+        self.k_compressed: Dict[int, Optional[torch.Tensor]] = {}
+        for layer in range(num_layers):
+            self.k_compressed[layer] = None  
+
+    def __getitem__(self, layer_idx: int) -> torch.Tensor:
+        # Return a tuple of (k_cache, k_remainder) for a given layer.
+        return (self.k_compressed[layer_idx])
+
+    def update(
+        self,
+        layer_idx: int,
+        batch_indices: torch.Tensor,
+        k_compressed: Optional[torch.Tensor] = None,
+        cache_block_position: Optional[torch.Tensor] = None,
+        is_decode: bool = False,
+        max_seqlen: Optional[int] = None,
+    ) -> torch.Tensor:
+
+        if k_compressed is not None:
+            if is_decode:
+                b, _, h, d = self.k_compressed[layer_idx].shape
+                self.k_compressed[layer_idx] = torch.cat([
+                    self.k_compressed[layer_idx], 
+                    torch.zeros([b, 1, h, d], device=self.k_compressed[layer_idx].device, dtype=self.k_compressed[layer_idx].dtype)], 
+                    dim=1
+                )
+                self.k_compressed[layer_idx][batch_indices, cache_block_position, :, :] = k_compressed
+            else:
+                self.k_compressed[layer_idx] = k_compressed
+        return self.k_compressed[layer_idx]
+
 
 
 # Utility functions for static/sliding cache update logic
