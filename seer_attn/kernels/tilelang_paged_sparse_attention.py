@@ -491,11 +491,6 @@ def main(args):
                 # Fill remaining slots with -1 (invalid)
                 for i in range(len(selected_blocks), max_selected_blocks):
                     block_indices[seq_idx, head_idx, i] = -1
-        
-    print(f"Block indices shape: {block_indices.shape}")
-    print(f"Sample block indices for seq 0, head 0: {block_indices[0, 0, :10]}")
-    print(f"Block table shape: {block_table.shape}")
-    print(f"Sample block table for seq 0: {block_table[0, :10]}")
 
 
     # Initialize sparse attention module
