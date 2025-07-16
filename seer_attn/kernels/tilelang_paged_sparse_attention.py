@@ -10,10 +10,8 @@ from einops import rearrange, einsum
 import argparse
 import time
 import math
-import random
+
 from seer_attn.kernels.varlen.utils import num_splits_heuristic
-
-
 tilelang.disable_cache()
 
 def flashattn(batch, heads, heads_kv, dim, dim_v):
@@ -267,6 +265,98 @@ class SparseFlashAttn(torch.nn.Module):
 
 
 
+def ref_program_torch_paged(query, key_cache, value_cache, block_indices, cache_seqlens, block_table, 
+                           page_block_size, block_size):
+    """
+    Paged version of sparse attention reference implementation.
+    
+    Args:
+        query: [batch, heads, dim]
+        key_cache: [num_pages, page_block_size, heads_kv, dim] 
+        value_cache: [num_pages, page_block_size, heads_kv, dim]
+        block_indices: [batch, heads_kv, max_selected_blocks] - logical block indices
+        cache_seqlens: [batch] - actual sequence lengths
+        block_table: [batch, max_num_blocks_per_seq] - maps logical to physical blocks
+        page_block_size: size of each page block
+        block_size: size of attention blocks (block_N)
+    """
+    batch, heads, dim = query.shape
+    heads_kv = key_cache.shape[2]
+    dim_v = value_cache.shape[3]
+    num_head_groups = heads // heads_kv
+    scale = dim**0.5
+    
+    # Reconstruct the full key and value tensors from paged cache
+    max_cache_seqlen = max(cache_seqlens).item()
+    key_full = torch.zeros((batch, heads_kv, max_cache_seqlen, dim), 
+                          dtype=key_cache.dtype, device=key_cache.device)
+    value_full = torch.zeros((batch, heads_kv, max_cache_seqlen, dim_v), 
+                            dtype=value_cache.dtype, device=value_cache.device)
+    
+    # Reconstruct full tensors from paged cache using block_table
+    for b in range(batch):
+        seq_len = cache_seqlens[b].item()
+        num_blocks_needed = int(math.ceil(seq_len / page_block_size))
+        
+        for block_idx in range(num_blocks_needed):
+            physical_block_idx = block_table[b, block_idx].item()
+            
+            # Calculate the range of tokens for this block
+            start_token = block_idx * page_block_size
+            end_token = min(start_token + page_block_size, seq_len)
+            actual_block_size = end_token - start_token
+            
+            # Copy from paged cache to full tensors
+            key_full[b, :, start_token:end_token, :] = key_cache[physical_block_idx, :actual_block_size, :, :].transpose(0, 1)
+            value_full[b, :, start_token:end_token, :] = value_cache[physical_block_idx, :actual_block_size, :, :].transpose(0, 1)
+    
+    # Reshape query for grouped attention
+    query = rearrange(
+        query, 'b (h g) d -> b g h d',
+        g=num_head_groups)  # [batch_size, num_head_groups, heads_kv, dim]
+    
+    # Compute attention scores
+    scores = einsum(
+        query, key_full,
+        'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, heads_kv, seqlen_kv]
+    
+    # Create sparse mask based on block_indices
+    sparse_mask = torch.zeros_like(scores)
+    
+    # Apply sparse mask based on selected blocks
+    for b in range(batch):
+        for h in range(heads_kv):
+            valid_indices = block_indices[b, h]  # Extract indices for this batch and head
+            for idx in valid_indices:
+                if idx >= 0:  # Valid block index
+                    start_pos = idx * block_size
+                    end_pos = min(start_pos + block_size, max_cache_seqlen)
+                    sparse_mask[b, :, h, start_pos:end_pos] = 1
+    
+    # Apply sparse mask
+    scores = scores.masked_fill(sparse_mask == 0, float('-inf'))
+    
+    # Apply causal mask based on actual sequence lengths
+    range_len = torch.arange(scores.shape[-1], device=scores.device).unsqueeze(0)
+    cache_seqlens_expanded = cache_seqlens.unsqueeze(1)
+    pad_mask = range_len >= cache_seqlens_expanded
+    pad_mask = pad_mask[:, None, None, :]
+    scores = scores.masked_fill(pad_mask, float('-inf'))
+    
+    # Compute attention weights
+    attention = F.softmax(scores / scale, dim=-1)
+    
+    # Apply attention to values
+    out = einsum(attention, value_full,
+                 'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, heads_kv, dim]
+    
+    # Reshape output back to original format
+    out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
+    
+    return out
+
+
+
 def ref_program_fa(query, kcache, vcache, cache_seqlens, block_table):
     # latency reference
     # from flash_attn_interface import flash_attn_with_kvcache # fa3
@@ -312,31 +402,39 @@ def main(args):
 
     # Fill block table and block indices and cache
     
-    # Fill block table with sequential physical block indices
+    # Create a pool of available physical blocks
+    total_blocks_needed = sum(int(math.ceil(cache_seqlens[seq_idx].item() / page_block_size)) for seq_idx in range(batch))
+    available_blocks = list(range(total_blocks_needed))
+    import random
+    random.seed(42)  # For reproducibility
+    random.shuffle(available_blocks)
+    
+    # Fill block table with random physical block indices
+    block_assignment = {}  # Map (seq_idx, block_idx) -> physical_block_idx
+    block_idx_counter = 0
+    
     for seq_idx in range(batch):
         seq_len = cache_seqlens[seq_idx].item()
         num_blocks_needed = int(math.ceil(seq_len / page_block_size))
         
-        # Assign physical blocks sequentially for each sequence
+        # Assign random physical blocks for each sequence
         for block_idx in range(num_blocks_needed):
-            physical_block_idx = seq_idx * max_num_blocks_per_seq + block_idx
+            physical_block_idx = available_blocks[block_idx_counter]
             block_table[seq_idx, block_idx] = physical_block_idx
+            block_assignment[(seq_idx, block_idx)] = physical_block_idx
+            block_idx_counter += 1
     
     print(f"Block table: {block_table}")
 
-    block_table_v2 = torch.arange(
-        batch * max_num_blocks_per_seq, dtype=torch.int32,
-        device='cuda').view(batch, max_num_blocks_per_seq)
-    print(f"Block table v2: {block_table_v2}")
 
 
-    # Fill K_cache and V_cache with data from original K and V tensors
+    # Fill K_cache and V_cache with data from original K and V tensors using random block assignment
     for seq_idx in range(batch):
         seq_len = cache_seqlens[seq_idx].item()
         num_blocks_needed = int(math.ceil(seq_len / page_block_size))
         
         for block_idx in range(num_blocks_needed):
-            physical_block_idx = seq_idx * max_num_blocks_per_seq + block_idx
+            physical_block_idx = block_assignment[(seq_idx, block_idx)]
             
             # Calculate the range of tokens for this block
             start_token = block_idx * page_block_size
@@ -352,55 +450,48 @@ def main(args):
     # For sparse case, we select a subset of blocks based on sparse_ratio
     for seq_idx in range(batch):
         seq_len = cache_seqlens[seq_idx].item()
-        num_logical_blocks = int(math.ceil(seq_len / block_N))
+        num_tile = int(math.ceil(seq_len / block_N))
         
         if sparse_ratio == 0.0:
             # Dense case: select all blocks in reverse order
-            selected_blocks = min(num_logical_blocks, max_selected_blocks)
+            selected_blocks = min(num_tile, max_selected_blocks)
             for head_idx in range(heads_kv):
                 for i in range(selected_blocks):
                     # Select blocks in reverse order (most recent first)
-                    block_indices[seq_idx, head_idx, i] = num_logical_blocks - 1 - i
+                    block_indices[seq_idx, head_idx, i] = num_tile - 1 - i
                 # Fill remaining slots with -1 (invalid)
                 for i in range(selected_blocks, max_selected_blocks):
                     block_indices[seq_idx, head_idx, i] = -1
         else:
-            # Sparse case: select subset of blocks based on sparse_ratio
-            num_selected = int(num_logical_blocks * (1.0 - sparse_ratio))
-            num_selected = max(1, min(num_selected, max_selected_blocks))
-            
-            # Create a list of all valid block indices
-            all_blocks = list(range(num_logical_blocks))
-            
-            # For demonstration, select the most recent blocks and some random earlier blocks
-            selected_blocks = []
-            
-            # Always include the most recent blocks (important for attention)
-            recent_blocks = min(num_selected // 2, num_logical_blocks)
-            for i in range(recent_blocks):
-                selected_blocks.append(num_logical_blocks - 1 - i)
-            
-            # Randomly select some earlier blocks
-            if num_selected > recent_blocks:
-                remaining_blocks = [b for b in all_blocks if b not in selected_blocks]
-                if remaining_blocks:
-                    import random
-                    random.seed(42)  # For reproducibility
-                    additional_blocks = random.sample(remaining_blocks, 
-                                                    min(num_selected - recent_blocks, len(remaining_blocks)))
-                    selected_blocks.extend(additional_blocks)
-            
-            # Sort selected blocks in reverse order (most recent first)
-            selected_blocks.sort(reverse=True)
-            
             # Fill block_indices for all KV heads
+            num_selected = int(num_tile * (1.0 - sparse_ratio))
+            num_selected = max(1, min(num_selected, max_selected_blocks))
+            all_blocks = list(range(num_tile))
             for head_idx in range(heads_kv):
+                selected_blocks = []
+                # Always include the most recent blocks
+                recent_blocks = 1
+                selected_blocks.append(num_tile - 1)
+                
+                # Randomly select some earlier blocks
+                if num_selected > recent_blocks:
+                    remaining_blocks = [b for b in all_blocks if b not in selected_blocks]
+                    if remaining_blocks:
+                        import random
+                        random.seed(42)  # For reproducibility
+                        additional_blocks = random.sample(remaining_blocks, 
+                                                        min(num_selected - recent_blocks, len(remaining_blocks)))
+                        selected_blocks.extend(additional_blocks)
+                
+                # Sort selected blocks in reverse order (most recent first)
+                selected_blocks.sort(reverse=True)
+                
                 for i in range(len(selected_blocks)):
                     block_indices[seq_idx, head_idx, i] = selected_blocks[i]
                 # Fill remaining slots with -1 (invalid)
                 for i in range(len(selected_blocks), max_selected_blocks):
                     block_indices[seq_idx, head_idx, i] = -1
-    
+        
     print(f"Block indices shape: {block_indices.shape}")
     print(f"Sample block indices for seq 0, head 0: {block_indices[0, 0, :10]}")
     print(f"Block table shape: {block_table.shape}")
@@ -411,19 +502,27 @@ def main(args):
     sparse_attn = SparseFlashAttn(batch, heads, heads_kv, dim, dim_v, page_block_size, block_N, num_blocks)
     output_sparse = sparse_attn.forward(Q, K_cache, V_cache, block_indices, cache_seqlens, block_table)
     
+    output_ref_fa = ref_program_fa(Q, K_cache, V_cache, cache_seqlens, block_table)
 
-    # Run reference implementation
-
-    output_ref = ref_program_fa(Q, K_cache, V_cache, cache_seqlens, block_table)
-    
-    print("Kernel Output: ", output_sparse)
-    print("Output: ", output_ref)
-
+    output_ref_torch = ref_program_torch_paged(
+            Q, K_cache, V_cache, block_indices, cache_seqlens, block_table, 
+            page_block_size, block_N)
 
     # Check correctness
-    max_diff = torch.max(torch.abs(output_sparse - output_ref)).item()
-    mean_diff = torch.mean(torch.abs(output_sparse - output_ref)).item()
+    if sparse_ratio == 0.0:
+        max_diff = torch.max(torch.abs(output_sparse - output_ref_fa)).item()
+        mean_diff = torch.mean(torch.abs(output_sparse - output_ref_fa)).item()
+        assert torch.allclose(output_ref_fa, output_ref_torch, atol=1e-2), "Reference outputs do not match!"
+    else:
+        
+        max_diff = torch.max(torch.abs(output_sparse - output_ref_torch)).item()
+        mean_diff = torch.mean(torch.abs(output_sparse - output_ref_torch)).item()
     
+
+    print("Kernel Output: ", output_sparse)
+    print("Output fa: ", output_ref_fa)
+    print("Output torch sparse: ", output_ref_torch)
+
     print(f"Max difference: {max_diff:.6f}")
     print(f"Mean difference: {mean_diff:.6f}")
     
@@ -432,7 +531,7 @@ def main(args):
     else:
         print("✗ Verification FAILED: Results differ significantly")
         
-    return output_sparse, output_ref
+    return output_sparse
 
 
 
