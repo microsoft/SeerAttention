@@ -525,8 +525,36 @@ def main(args):
         print("✓ Verification PASSED: Results match within tolerance")
     else:
         print("✗ Verification FAILED: Results differ significantly")
-        
-    return output_sparse
+    
+
+    # Performance measurement
+    for _ in range(10):  # Warm-up
+        sparse_attn.forward(Q, K_cache, V_cache, block_indices, cache_seqlens, block_table) 
+    
+    torch.cuda.synchronize()  
+    start_time = time.time()
+    for _ in range(100):  # Run multiple times for averaging
+        sparse_attn.forward(Q, K_cache, V_cache, block_indices, cache_seqlens, block_table)
+    torch.cuda.synchronize()
+    end_time = time.time()
+
+    kernel_time = (end_time - start_time) / 100 * 1000  # Convert to ms
+    print(f"Kernel execution time: {kernel_time:.2f} ms")
+
+    # FA performance measurement
+    for _ in range(10):  # Warm-up
+        ref_program_fa(Q, K_cache, V_cache, cache_seqlens, block_table)
+    torch.cuda.synchronize()
+    start_time_fa = time.time()
+    for _ in range(100):  # Run multiple times for averaging
+        ref_program_fa(Q, K_cache, V_cache, cache_seqlens, block_table)
+    torch.cuda.synchronize()
+    end_time_fa = time.time()
+    kernel_time_fa = (end_time_fa - start_time_fa) / 100 * 1000  # Convert to ms
+    print(f"FA kernel execution time: {kernel_time_fa:.2f} ms")
+
+    print(f"Speedup: {kernel_time_fa / kernel_time:.2f}x")
+
 
 
 
